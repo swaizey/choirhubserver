@@ -1,0 +1,44 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "choirhub-selection-api",
+  "account_id": "4528f84df3b37c826b65e801e002f86a",
+  "main": "src/index.js",
+  "compatibility_date": "2026-10-04",
+  "workers_dev": true,
+  "routes": [
+    {
+      "pattern": "api.choirhub.ng",
+      "custom_domain": true
+    }
+  ],
+  "vars": {
+    "SUPABASE_URL": "https://qquvezlkbmbeczhfywnf.supabase.co",
+    "ALLOWED_ORIGINS": "http://localhost:5173,https://choirhub.ng",
+    "R2_PUBLIC_BASE_URL": "https://pub-b82faeceab0b441b93ebbb3d382ecd17.r2.dev"
+  },
+  "r2_buckets": [
+    {
+      "binding": "PDF_BUCKET",
+      "bucket_name": "choirhub",
+      "remote": false
+    }
+  ],
+  "secrets": {
+    "required": [
+      "SUPABASE_SERVICE_ROLE_KEY",
+      "BULK_UPLOAD_TOKEN",
+      "GOOGLE_DRIVE_API_KEY"
+    ]
+  },
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "enabled": true,
+      "head_sampling_rate": 1
+    },
+    "traces": {
+      "enabled": true,
+      "head_sampling_rate": 0.1
+    }
+  }
+}
