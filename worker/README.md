@@ -24,7 +24,7 @@ The public upload endpoint currently has no Turnstile or other upload verificati
 
 ## Supabase and Google setup
 
-1. Run all four SQL files in `migrations/` in timestamp order in the Supabase SQL Editor. The third migration allows direct public uploads without a Google Drive file ID; the fourth adds unique selection views.
+1. Run all five SQL files in `migrations/` in timestamp order in the Supabase SQL Editor. The third migration allows direct public uploads without a Google Drive file ID; the fourth adds unique selection views; the fifth rewrites existing R2 development-domain URLs to the production custom domain.
 2. Set `SUPABASE_URL` in `worker/wrangler.jsonc` to the project's HTTPS URL.
 3. Enable the Google Drive API in Google Cloud and create an API key restricted to the Drive API. Share each source folder so that anyone with its link can view it.
 4. Set `R2_PUBLIC_BASE_URL` in `worker/wrangler.jsonc` to the public HTTPS domain of the R2 bucket, without a query string or trailing object path.
