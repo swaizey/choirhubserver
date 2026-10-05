@@ -7,11 +7,14 @@ The form sends selection names, liturgy dates, and the 11 liturgy parts to the C
 - `src/index.js` contains only routing, origin checks, and method handling.
 - `src/http.js` contains shared JSON, body-reading, Supabase, and bulk-token helpers.
 - `src/selections.js` validates and stores mass selections.
+- `src/sheet-music.js` loads public catalogue records from Supabase and builds PDF links from their R2 keys.
 - `src/bulk-import.js` handles Drive folder listing, per-PDF download, and R2/Supabase storage.
 
 ## Bulk PDF import
 
 The sheet-music page has a public **Upload a PDF** form and a separate admin bulk-import form. Public users can submit one PDF, title, optional composer, and category without an account or bulk token. The Worker validates each PDF within the 15 MB limit, writes its bytes to R2 at `<category>/random-id.pdf`, and saves the metadata and public file URL in Supabase as the catalogue reference. Writing a bounded byte array gives R2 a known content length even when a local development proxy forwards the request as a stream. The file is publicly accessible to anyone with its URL. The R2 category prefix preserves the category name and casing; slash characters are not allowed in category names.
+
+The library calls `GET /api/sheet-music` to load the latest 100 catalogue records from Supabase. The Worker constructs each public PDF URL from `R2_PUBLIC_BASE_URL` and the record's `r2_key`, so changing the base URL also updates links for previously uploaded files without moving the PDF bytes.
 
 The admin bulk-import form accepts one publicly shared Google Drive folder URL, a category name, and the administrative bulk-upload token. The Worker uses the Drive API to enumerate PDFs; the browser reads the embedded PDF title and author/composer (falling back to the file name when title metadata is absent), adds the ChoirHub logo as a subtle watermark at the bottom right of every page, and uploads the watermarked PDF through the Worker to R2. Public single-PDF uploads receive the same watermark before upload. The Worker saves the title, composer, category, public URL, R2 key, and Drive file ID in Supabase. Re-imported Drive files are skipped.
 
@@ -37,6 +40,6 @@ Run `npm run worker:dev` and `npm run dev` in separate terminals. Vite proxies `
 
 ## Deployment
 
-The Worker is configured with the `api.choirhub.ng` custom domain; it requires `choirhub.ng` to be an active Cloudflare zone. The production frontend at `https://choirhub.ng` sends selection, bulk-import, and public PDF upload requests to this API hostname by default. Set `ALLOWED_ORIGINS` in `worker/wrangler.jsonc` to the exact deployed frontend origins before deploying. Override `VITE_SELECTIONS_API_URL` at frontend build time only if using a different Worker API URL; bulk import and both PDF upload flows derive their endpoint URLs from the same API base. `R2_PUBLIC_BASE_URL` is separate: it controls public links to uploaded PDFs and should remain set to the R2 public domain unless a separate R2 custom domain is configured.
+The Worker is configured with the `api.choirhub.ng` custom domain; it requires `choirhub.ng` to be an active Cloudflare zone. The production frontend at `https://choirhub.ng` sends selection, bulk-import, and public PDF upload requests to this API hostname by default. Set `ALLOWED_ORIGINS` in `worker/wrangler.jsonc` to the exact deployed frontend origins before deploying. Override `VITE_SELECTIONS_API_URL` at frontend build time only if using a different Worker API URL; bulk import and both PDF upload flows derive their endpoint URLs from the same API base. `R2_PUBLIC_BASE_URL` is separate from the API domain; it points to the R2 custom domain `https://choirhub-pdfs.choirhub.ng` and controls public PDF links.
 
 The Drive bulk-import endpoints require the Worker-only `BULK_UPLOAD_TOKEN`, which the administrator enters into the form for each import; it is not stored by the frontend. The public direct-upload endpoint does not require this token. The separate mass-selection endpoint still requires a dedicated authentication/anti-abuse control before accepting public submissions in production.

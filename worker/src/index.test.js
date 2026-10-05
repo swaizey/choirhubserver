@@ -15,6 +15,7 @@ const testBulkToken = 'admin-token'
 const env = {
   SUPABASE_URL: 'https://project.supabase.co',
   SUPABASE_SERVICE_ROLE_KEY: 'test-service-role-key',
+  R2_PUBLIC_BASE_URL: 'https://pdfs.example.com',
   ALLOWED_ORIGINS: `${allowedOrigin},https://choirhub.netlify.app`,
 }
 
@@ -130,6 +131,53 @@ test('lists saved selections from Supabase', async () => {
       createHmac('sha256', env.SUPABASE_SERVICE_ROLE_KEY).update('203.0.113.42').digest('hex'),
     )
     assert.deepEqual(data.selections, [{ ...selections[0], view_count: 4 }])
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('lists saved sheet music and its actual R2 PDF URL from Supabase', async () => {
+  const originalFetch = globalThis.fetch
+  let supabaseUrl
+  const sheetMusic = [{
+    id: 'pdf-1',
+    title: 'Advent Song',
+    composer: 'ChoirHub',
+    category: 'Advent & Christmas',
+    r2_key: 'Advent & Christmas/song.pdf',
+    created_at: '2026-10-05T08:00:00Z',
+  }]
+
+  globalThis.fetch = async (url, options = {}) => {
+    supabaseUrl = new URL(String(url))
+    assert.equal(options.headers.apikey, env.SUPABASE_SERVICE_ROLE_KEY)
+    return Response.json(sheetMusic)
+  }
+
+  try {
+    const response = await worker.fetch(
+      new Request('https://worker.example/api/sheet-music', {
+        method: 'GET',
+        headers: { Origin: allowedOrigin },
+      }),
+      env,
+    )
+    const data = await response.json()
+
+    assert.equal(response.status, 200)
+    assert.equal(response.headers.get('Access-Control-Allow-Origin'), allowedOrigin)
+    assert.equal(supabaseUrl.pathname, '/rest/v1/sheet_music')
+    assert.equal(supabaseUrl.searchParams.get('select'), 'id,title,composer,category,r2_key,created_at')
+    assert.equal(supabaseUrl.searchParams.get('order'), 'created_at.desc')
+    assert.equal(supabaseUrl.searchParams.get('limit'), '100')
+    assert.deepEqual(data.sheetMusic, [{
+      id: 'pdf-1',
+      title: 'Advent Song',
+      composer: 'ChoirHub',
+      category: 'Advent & Christmas',
+      file_url: 'https://pdfs.example.com/Advent%20%26%20Christmas/song.pdf',
+      created_at: '2026-10-05T08:00:00Z',
+    }])
   } finally {
     globalThis.fetch = originalFetch
   }

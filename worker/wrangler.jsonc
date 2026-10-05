@@ -14,7 +14,7 @@
   "vars": {
     "SUPABASE_URL": "https://qquvezlkbmbeczhfywnf.supabase.co",
     "ALLOWED_ORIGINS": "http://localhost:5173,https://choirhub.ng,https://choirhub.netlify.app",
-    "R2_PUBLIC_BASE_URL": "https://pub-b82faeceab0b441b93ebbb3d382ecd17.r2.dev"
+    "R2_PUBLIC_BASE_URL": "https://choirhub-pdfs.choirhub.ng"
   },
   "r2_buckets": [
     {
