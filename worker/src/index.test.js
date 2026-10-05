@@ -266,13 +266,48 @@ test('paginates sheet music and applies catalogue search before selecting a page
     assert.equal(supabaseUrl.searchParams.get('offset'), '1')
     assert.equal(
       supabaseUrl.searchParams.get('or'),
-      '(title.ilike.*Advent & Christmas*,composer.ilike.*Advent & Christmas*,category.ilike.*Advent & Christmas*)',
+      '(title.ilike.*a*d*v*e*n*t*c*h*r*i*s*t*m*a*s*,composer.ilike.*Advent & Christmas*,category.ilike.*Advent & Christmas*)',
     )
     assert.equal(supabaseUrl.searchParams.get('category'), 'eq.Advent & Christmas')
     assert.equal(data.page, 2)
     assert.equal(data.pageSize, 1)
     assert.equal(data.sheetMusic.length, 1)
     assert.equal(data.hasMore, true)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('matches title searches that omit spaces and punctuation', async () => {
+  const originalFetch = globalThis.fetch
+  let supabaseUrl
+  globalThis.fetch = async (url) => {
+    supabaseUrl = new URL(String(url))
+    const orFilter = supabaseUrl.searchParams.get('or')
+    assert.equal(
+      orFilter,
+      '(title.ilike.*k*a*n*y*i*j*e*n*a*,composer.ilike.*kanyije na*,category.ilike.*kanyije na*)',
+    )
+    return Response.json([{
+      id: 'pdf-1',
+      title: "K' anyi je na Bethlehem",
+      composer: 'ChoirHub',
+      category: 'Advent & Christmas',
+      r2_key: 'Advent/song.pdf',
+      created_at: '2026-10-05T08:00:00Z',
+    }])
+  }
+
+  try {
+    const response = await worker.fetch(
+      new Request('https://worker.example/api/sheet-music?q=kanyije%20na'),
+      env,
+    )
+    const data = await response.json()
+
+    assert.equal(response.status, 200)
+    assert.equal(data.sheetMusic.length, 1)
+    assert.equal(data.sheetMusic[0].title, "K' anyi je na Bethlehem")
   } finally {
     globalThis.fetch = originalFetch
   }

@@ -39,7 +39,9 @@ export async function handleSheetMusicList(request, env, origin) {
   }
   if (search) {
     const pattern = `*${search}*`
-    query.or = `(title.ilike.${pattern},composer.ilike.${pattern},category.ilike.${pattern})`
+    const normalizedTitleSearch = search.replace(/[^\p{L}\p{N}]/gu, '').toLocaleLowerCase()
+    const titlePattern = `*${Array.from(normalizedTitleSearch).join('*')}*`
+    query.or = `(title.ilike.${titlePattern},composer.ilike.${pattern},category.ilike.${pattern})`
   }
   if (category) query.category = `eq.${category}`
 
