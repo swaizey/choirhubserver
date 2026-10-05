@@ -13,7 +13,7 @@ const allowedOrigin = 'http://localhost:5173'
 const env = {
   SUPABASE_URL: 'https://project.supabase.co',
   SUPABASE_SERVICE_ROLE_KEY: 'test-service-role-key',
-  ALLOWED_ORIGINS: allowedOrigin,
+  ALLOWED_ORIGINS: `${allowedOrigin},https://choirhub.netlify.app`,
 }
 
 function makeSelection() {
@@ -125,7 +125,7 @@ test('lists saved selections from Supabase', async () => {
   }
 })
 
-test('requires a Cloudflare client IP when there are selections to count', async () => {
+test('returns selections when Cloudflare does not provide a client IP', async () => {
   const originalFetch = globalThis.fetch
   globalThis.fetch = async () => Response.json([{ id: 'selection-1' }])
 
@@ -135,8 +135,38 @@ test('requires a Cloudflare client IP when there are selections to count', async
       env,
     )
 
-    assert.equal(response.status, 503)
-    assert.match((await response.json()).error, /identify the viewer/)
+    const data = await response.json()
+    assert.equal(response.status, 200)
+    assert.equal(data.selections[0].view_count, null)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('returns selections when Supabase view counting is unavailable', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (url) => (
+    new URL(String(url)).pathname === '/rest/v1/mass_selections'
+      ? Response.json([{ id: 'selection-1', title: 'Sunday Mass' }])
+      : Response.json({ message: 'Function not found.' }, { status: 404 })
+  )
+
+  try {
+    const response = await worker.fetch(
+      new Request('https://worker.example/api/selections', {
+        method: 'GET',
+        headers: { 'CF-Connecting-IP': '203.0.113.42' },
+      }),
+      env,
+    )
+    const data = await response.json()
+
+    assert.equal(response.status, 200)
+    assert.deepEqual(data.selections, [{
+      id: 'selection-1',
+      title: 'Sunday Mass',
+      view_count: null,
+    }])
   } finally {
     globalThis.fetch = originalFetch
   }

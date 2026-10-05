@@ -15,6 +15,10 @@ const SELECTION_PARTS = [
 ]
 const MAX_SONGS_PER_PART = 20
 
+function withUnavailableViewCounts(selections) {
+  return selections.map((selection) => ({ ...selection, view_count: null }))
+}
+
 async function hashViewerAddress(address, secret) {
   const encoder = new TextEncoder()
   const key = await crypto.subtle.importKey(
@@ -74,51 +78,59 @@ export async function handleSelectionList(request, env, origin) {
     const viewerAddress = request.headers.get('CF-Connecting-IP')
     if (!viewerAddress) {
       console.error(JSON.stringify({ message: 'Cloudflare client IP header is missing.' }))
-      return jsonResponse({ error: 'Could not identify the viewer. Please try again.' }, 503, origin)
+      return jsonResponse({ selections: withUnavailableViewCounts(selections) }, 200, origin)
     }
 
-    const viewerHash = await hashViewerAddress(viewerAddress, env.SUPABASE_SERVICE_ROLE_KEY)
-    const viewResponse = await supabaseRequest(
-      env,
-      getSupabaseTableUrl(env, 'rpc/record_selection_views'),
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          p_selection_ids: selections.map((selection) => selection.id),
-          p_viewer_hash: viewerHash,
-        }),
-      },
-    )
-    if (!viewResponse.ok) {
-      console.error(JSON.stringify({
-        message: 'Supabase rejected the selection-view request.',
-        status: viewResponse.status,
-      }))
-      return jsonResponse({ error: 'Could not load selection view counts. Please try again.' }, 502, origin)
-    }
-
-    const viewCounts = await viewResponse.json()
-    if (!Array.isArray(viewCounts)) {
-      throw new Error('Supabase returned invalid selection view counts.')
-    }
-    const countsBySelectionId = new Map(
-      viewCounts.map(({ selection_id, view_count }) => [selection_id, Number(view_count)]),
-    )
-    const selectionsWithCounts = selections.map((selection) => {
-      const viewCount = countsBySelectionId.get(selection.id)
-      if (!Number.isSafeInteger(viewCount) || viewCount < 0) {
-        throw new Error(`Supabase returned an invalid view count for selection ${selection.id}.`)
+    try {
+      const viewerHash = await hashViewerAddress(viewerAddress, env.SUPABASE_SERVICE_ROLE_KEY)
+      const viewResponse = await supabaseRequest(
+        env,
+        getSupabaseTableUrl(env, 'rpc/record_selection_views'),
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            p_selection_ids: selections.map((selection) => selection.id),
+            p_viewer_hash: viewerHash,
+          }),
+        },
+      )
+      if (!viewResponse.ok) {
+        console.error(JSON.stringify({
+          message: 'Supabase rejected the selection-view request.',
+          status: viewResponse.status,
+        }))
+        return jsonResponse({ selections: withUnavailableViewCounts(selections) }, 200, origin)
       }
-      return { ...selection, view_count: viewCount }
-    })
-    return jsonResponse({ selections: selectionsWithCounts }, 200, origin)
+
+      const viewCounts = await viewResponse.json()
+      if (!Array.isArray(viewCounts)) {
+        throw new Error('Supabase returned invalid selection view counts.')
+      }
+      const countsBySelectionId = new Map(
+        viewCounts.map(({ selection_id, view_count }) => [selection_id, Number(view_count)]),
+      )
+      const selectionsWithCounts = selections.map((selection) => {
+        const viewCount = countsBySelectionId.get(selection.id)
+        if (!Number.isSafeInteger(viewCount) || viewCount < 0) {
+          throw new Error(`Supabase returned an invalid view count for selection ${selection.id}.`)
+        }
+        return { ...selection, view_count: viewCount }
+      })
+      return jsonResponse({ selections: selectionsWithCounts }, 200, origin)
+    } catch (error) {
+      console.error(JSON.stringify({
+        message: 'Could not load selection view counts.',
+        error: error instanceof Error ? error.message : String(error),
+      }))
+      return jsonResponse({ selections: withUnavailableViewCounts(selections) }, 200, origin)
+    }
   } catch (error) {
     console.error(JSON.stringify({
-      message: 'Could not load selection view counts.',
+      message: 'Could not parse the Supabase selection list.',
       error: error instanceof Error ? error.message : String(error),
     }))
-    return jsonResponse({ error: 'Could not load selections and view counts. Please try again.' }, 502, origin)
+    return jsonResponse({ error: 'Could not load selections. Please try again.' }, 502, origin)
   }
 }
 
