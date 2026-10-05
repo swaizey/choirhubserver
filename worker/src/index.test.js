@@ -277,6 +277,51 @@ test('paginates sheet music and applies catalogue search before selecting a page
   }
 })
 
+test('downloads a catalogue PDF from R2 with a title-based ChoirHub filename', async () => {
+  const originalFetch = globalThis.fetch
+  let supabaseUrl
+  let r2Key
+  const pdfBucket = {
+    async get(key) {
+      r2Key = key
+      return {
+        body: new Blob(['%PDF-1.7']).stream(),
+        size: 8,
+      }
+    },
+  }
+  globalThis.fetch = async (url) => {
+    supabaseUrl = new URL(String(url))
+    return Response.json([{ title: 'Merry Christmas.pdf', r2_key: 'Advent & Christmas/merry.pdf' }])
+  }
+
+  try {
+    const response = await worker.fetch(
+      new Request('https://worker.example/api/sheet-music/123e4567-e89b-12d3-a456-426614174000/download', {
+        method: 'GET',
+        headers: { Origin: allowedOrigin },
+      }),
+      { ...env, PDF_BUCKET: pdfBucket },
+    )
+
+    assert.equal(response.status, 200)
+    assert.equal(response.headers.get('Content-Type'), 'application/pdf')
+    assert.equal(response.headers.get('Content-Length'), '8')
+    assert.equal(
+      response.headers.get('Content-Disposition'),
+      'attachment; filename="Merry Christmas-ChoirHub.pdf"; filename*=UTF-8\'\'Merry%20Christmas-ChoirHub.pdf',
+    )
+    assert.equal(response.headers.get('Access-Control-Allow-Origin'), allowedOrigin)
+    assert.equal(supabaseUrl.pathname, '/rest/v1/sheet_music')
+    assert.equal(supabaseUrl.searchParams.get('id'), 'eq.123e4567-e89b-12d3-a456-426614174000')
+    assert.equal(supabaseUrl.searchParams.get('select'), 'title,r2_key')
+    assert.equal(r2Key, 'Advent & Christmas/merry.pdf')
+    assert.equal(await response.text(), '%PDF-1.7')
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('rejects invalid pagination parameters', async () => {
   const response = await worker.fetch(
     new Request('https://worker.example/api/sheet-music?page=0&pageSize=500'),
