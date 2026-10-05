@@ -1,6 +1,6 @@
 {
   "$schema": "../node_modules/wrangler/config-schema.json",
-  "name": "choirhub-selection-api",
+  "name": "choirhubserver",
   "account_id": "4528f84df3b37c826b65e801e002f86a",
   "main": "src/index.js",
   "compatibility_date": "2026-10-04",
