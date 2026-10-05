@@ -122,8 +122,9 @@ test('lists saved selections from Supabase', async () => {
     assert.equal(response.headers.get('Access-Control-Allow-Origin'), allowedOrigin)
     assert.equal(supabaseUrl.pathname, '/rest/v1/mass_selections')
     assert.equal(supabaseUrl.searchParams.get('select'), 'id,title,service_date,parts,created_at')
-    assert.equal(supabaseUrl.searchParams.get('order'), 'created_at.desc')
-    assert.equal(supabaseUrl.searchParams.get('limit'), '100')
+    assert.equal(supabaseUrl.searchParams.get('order'), 'created_at.desc,id.desc')
+    assert.equal(supabaseUrl.searchParams.get('limit'), '13')
+    assert.equal(supabaseUrl.searchParams.get('offset'), '0')
     assert.equal(supabaseHeaders.apikey, env.SUPABASE_SERVICE_ROLE_KEY)
     assert.deepEqual(viewRpcPayload.p_selection_ids, ['selection-1'])
     assert.equal(
@@ -131,6 +132,47 @@ test('lists saved selections from Supabase', async () => {
       createHmac('sha256', env.SUPABASE_SERVICE_ROLE_KEY).update('203.0.113.42').digest('hex'),
     )
     assert.deepEqual(data.selections, [{ ...selections[0], view_count: 4 }])
+    assert.equal(data.page, 1)
+    assert.equal(data.pageSize, 12)
+    assert.equal(data.hasMore, false)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('paginates selection results and requests view counts only for the current page', async () => {
+  const originalFetch = globalThis.fetch
+  let selectionUrl
+  let viewPayload
+  globalThis.fetch = async (url, options = {}) => {
+    const requestUrl = new URL(String(url))
+    if (requestUrl.pathname === '/rest/v1/mass_selections') {
+      selectionUrl = requestUrl
+      return Response.json([{ id: 'selection-page-2' }, { id: 'selection-page-3' }])
+    }
+    viewPayload = JSON.parse(options.body)
+    return Response.json([{ selection_id: 'selection-page-2', view_count: 1 }])
+  }
+
+  try {
+    const response = await worker.fetch(
+      new Request('https://worker.example/api/selections?page=2&pageSize=1', {
+        method: 'GET',
+        headers: { 'CF-Connecting-IP': '203.0.113.42' },
+      }),
+      env,
+    )
+    const data = await response.json()
+
+    assert.equal(response.status, 200)
+    assert.equal(selectionUrl.searchParams.get('limit'), '2')
+    assert.equal(selectionUrl.searchParams.get('offset'), '1')
+    assert.deepEqual(viewPayload.p_selection_ids, ['selection-page-2'])
+    assert.equal(data.page, 2)
+    assert.equal(data.pageSize, 1)
+    assert.equal(data.hasMore, true)
+    assert.deepEqual(data.selections.map(({ id }) => id), ['selection-page-2'])
+    assert.equal(data.selections[0].view_count, 1)
   } finally {
     globalThis.fetch = originalFetch
   }
@@ -168,8 +210,9 @@ test('lists saved sheet music and its actual R2 PDF URL from Supabase', async ()
     assert.equal(response.headers.get('Access-Control-Allow-Origin'), allowedOrigin)
     assert.equal(supabaseUrl.pathname, '/rest/v1/sheet_music')
     assert.equal(supabaseUrl.searchParams.get('select'), 'id,title,composer,category,r2_key,created_at')
-    assert.equal(supabaseUrl.searchParams.get('order'), 'created_at.desc')
-    assert.equal(supabaseUrl.searchParams.get('limit'), '100')
+    assert.equal(supabaseUrl.searchParams.get('order'), 'created_at.desc,id.desc')
+    assert.equal(supabaseUrl.searchParams.get('limit'), '13')
+    assert.equal(supabaseUrl.searchParams.get('offset'), '0')
     assert.deepEqual(data.sheetMusic, [{
       id: 'pdf-1',
       title: 'Advent Song',
@@ -178,9 +221,69 @@ test('lists saved sheet music and its actual R2 PDF URL from Supabase', async ()
       file_url: 'https://pdfs.example.com/Advent%20%26%20Christmas/song.pdf',
       created_at: '2026-10-05T08:00:00Z',
     }])
+    assert.equal(data.page, 1)
+    assert.equal(data.pageSize, 12)
+    assert.equal(data.hasMore, false)
   } finally {
     globalThis.fetch = originalFetch
   }
+})
+
+test('paginates sheet music and applies catalogue search before selecting a page', async () => {
+  const originalFetch = globalThis.fetch
+  let supabaseUrl
+  globalThis.fetch = async (url) => {
+    supabaseUrl = new URL(String(url))
+    return Response.json([
+      {
+        id: 'pdf-page-2',
+        title: 'Song in Advent',
+        composer: 'Composer',
+        category: 'Advent',
+        r2_key: 'Advent/song.pdf',
+        created_at: '2026-10-05T08:00:00Z',
+      },
+      {
+        id: 'pdf-page-3',
+        title: 'Another Advent Song',
+        composer: 'Composer',
+        category: 'Advent',
+        r2_key: 'Advent/song-2.pdf',
+        created_at: '2026-10-04T08:00:00Z',
+      },
+    ])
+  }
+
+  try {
+    const response = await worker.fetch(
+      new Request('https://worker.example/api/sheet-music?page=2&pageSize=1&q=Advent'),
+      env,
+    )
+    const data = await response.json()
+
+    assert.equal(response.status, 200)
+    assert.equal(supabaseUrl.searchParams.get('limit'), '2')
+    assert.equal(supabaseUrl.searchParams.get('offset'), '1')
+    assert.equal(
+      supabaseUrl.searchParams.get('or'),
+      '(title.ilike.*Advent*,composer.ilike.*Advent*,category.ilike.*Advent*)',
+    )
+    assert.equal(data.page, 2)
+    assert.equal(data.pageSize, 1)
+    assert.equal(data.sheetMusic.length, 1)
+    assert.equal(data.hasMore, true)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('rejects invalid pagination parameters', async () => {
+  const response = await worker.fetch(
+    new Request('https://worker.example/api/sheet-music?page=0&pageSize=500'),
+    env,
+  )
+
+  assert.equal(response.status, 400)
 })
 
 test('returns selections when Cloudflare does not provide a client IP', async () => {

@@ -47,7 +47,7 @@ export default {
       return handleSelectionList(request, env, origin)
     }
     if (url.pathname === '/api/sheet-music' && request.method === 'GET') {
-      return handleSheetMusicList(env, origin)
+      return handleSheetMusicList(request, env, origin)
     }
     if (isSheetMusicPath) {
       return jsonResponse({ error: 'Method not allowed.' }, 405, origin)

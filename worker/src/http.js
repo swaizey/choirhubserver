@@ -1,4 +1,28 @@
 export const MAX_REQUEST_BYTES = 64 * 1024
+export const DEFAULT_PAGE_SIZE = 12
+export const MAX_PAGE_SIZE = 50
+
+export function parsePagination(url) {
+  const pageValue = url.searchParams.get('page') || '1'
+  const pageSizeValue = url.searchParams.get('pageSize') || String(DEFAULT_PAGE_SIZE)
+  if (!/^\d+$/.test(pageValue) || !/^\d+$/.test(pageSizeValue)) return null
+
+  const page = Number(pageValue)
+  const pageSize = Number(pageSizeValue)
+  const offset = (page - 1) * pageSize
+  if (
+    !Number.isSafeInteger(page)
+    || page < 1
+    || !Number.isSafeInteger(pageSize)
+    || pageSize < 1
+    || pageSize > MAX_PAGE_SIZE
+    || !Number.isSafeInteger(offset)
+  ) {
+    return null
+  }
+
+  return { page, pageSize, offset, limit: pageSize + 1 }
+}
 
 export function jsonResponse(body, status, origin) {
   const headers = new Headers({

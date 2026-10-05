@@ -1,6 +1,6 @@
 # Selection and sheet-music uploads
 
-The form sends selection names, liturgy dates, and the 11 liturgy parts to the Cloudflare Worker. Each part may contain multiple songs; song authors are stored as an empty string when omitted. The Worker saves submissions in Supabase, and the Music selections section reads the latest 100 records from that database. Each list load records one unique view per selection and client IP; the Worker stores an HMAC of the IP rather than the raw address. PDF handling is separate and is not part of this endpoint.
+The form sends selection names, liturgy dates, and the 11 liturgy parts to the Cloudflare Worker. Each part may contain multiple songs; song authors are stored as an empty string when omitted. The Worker saves submissions in Supabase, and the Music selections section reads the latest records in pages of 12. Each list load records one unique view per selection and client IP on the current page; the Worker stores an HMAC of the IP rather than the raw address. PDF handling is separate and is not part of this endpoint.
 
 ## Worker code layout
 
@@ -14,7 +14,7 @@ The form sends selection names, liturgy dates, and the 11 liturgy parts to the C
 
 The sheet-music page has a public **Upload a PDF** form and a separate admin bulk-import form. Public users can submit one PDF, title, optional composer, and category without an account or bulk token. The Worker validates each PDF within the 15 MB limit, writes its bytes to R2 at `<category>/random-id.pdf`, and saves the metadata and public file URL in Supabase as the catalogue reference. Writing a bounded byte array gives R2 a known content length even when a local development proxy forwards the request as a stream. The file is publicly accessible to anyone with its URL. The R2 category prefix preserves the category name and casing; slash characters are not allowed in category names.
 
-The library calls `GET /api/sheet-music` to load the latest 100 catalogue records from Supabase. The Worker constructs each public PDF URL from `R2_PUBLIC_BASE_URL` and the record's `r2_key`, so changing the base URL also updates links for previously uploaded files without moving the PDF bytes.
+The library calls `GET /api/sheet-music` to load catalogue records from Supabase in pages of 12. Both list endpoints accept `page` (starting at 1) and `pageSize` (1–50) query parameters and return `hasMore` for next-page navigation. The sheet-music endpoint also accepts `q` to search titles, composers, and categories. The Worker constructs each public PDF URL from `R2_PUBLIC_BASE_URL` and the record's `r2_key`, so changing the base URL also updates links for previously uploaded files without moving the PDF bytes.
 
 The admin bulk-import form accepts one publicly shared Google Drive folder URL, a category name, and the administrative bulk-upload token. The Worker uses the Drive API to enumerate PDFs; the browser reads the embedded PDF title and author/composer (falling back to the file name when title metadata is absent), adds the ChoirHub logo as a subtle watermark at the bottom right of every page, and uploads the watermarked PDF through the Worker to R2. Public single-PDF uploads receive the same watermark before upload. The Worker saves the title, composer, category, public URL, R2 key, and Drive file ID in Supabase. Re-imported Drive files are skipped.
 

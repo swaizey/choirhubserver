@@ -1,4 +1,10 @@
-import { getSupabaseTableUrl, jsonResponse, readJsonBody, supabaseRequest } from './http.js'
+import {
+  getSupabaseTableUrl,
+  jsonResponse,
+  parsePagination,
+  readJsonBody,
+  supabaseRequest,
+} from './http.js'
 
 const SELECTION_PARTS = [
   'Entrance',
@@ -40,14 +46,20 @@ export async function handleSelectionList(request, env, origin) {
     return jsonResponse({ error: 'Selection storage is not configured.' }, 503, origin)
   }
 
+  const pagination = parsePagination(new URL(request.url))
+  if (!pagination) {
+    return jsonResponse({ error: 'Page must be positive and pageSize must be between 1 and 50.' }, 400, origin)
+  }
+
   let supabaseResponse
   try {
     supabaseResponse = await supabaseRequest(
       env,
       getSupabaseTableUrl(env, 'mass_selections', {
         select: 'id,title,service_date,parts,created_at',
-        order: 'created_at.desc',
-        limit: '100',
+        order: 'created_at.desc,id.desc',
+        limit: String(pagination.limit),
+        offset: String(pagination.offset),
       }),
     )
   } catch (error) {
@@ -67,18 +79,30 @@ export async function handleSelectionList(request, env, origin) {
   }
 
   try {
-    const selections = await supabaseResponse.json()
-    if (!Array.isArray(selections)) {
+    const rows = await supabaseResponse.json()
+    if (!Array.isArray(rows)) {
       throw new Error('Supabase returned an invalid selection list.')
     }
+    const hasMore = rows.length > pagination.pageSize
+    const selections = rows.slice(0, pagination.pageSize)
     if (selections.length === 0) {
-      return jsonResponse({ selections }, 200, origin)
+      return jsonResponse({
+        selections,
+        page: pagination.page,
+        pageSize: pagination.pageSize,
+        hasMore,
+      }, 200, origin)
     }
 
     const viewerAddress = request.headers.get('CF-Connecting-IP')
     if (!viewerAddress) {
       console.error(JSON.stringify({ message: 'Cloudflare client IP header is missing.' }))
-      return jsonResponse({ selections: withUnavailableViewCounts(selections) }, 200, origin)
+      return jsonResponse({
+        selections: withUnavailableViewCounts(selections),
+        page: pagination.page,
+        pageSize: pagination.pageSize,
+        hasMore,
+      }, 200, origin)
     }
 
     try {
@@ -100,7 +124,12 @@ export async function handleSelectionList(request, env, origin) {
           message: 'Supabase rejected the selection-view request.',
           status: viewResponse.status,
         }))
-        return jsonResponse({ selections: withUnavailableViewCounts(selections) }, 200, origin)
+        return jsonResponse({
+          selections: withUnavailableViewCounts(selections),
+          page: pagination.page,
+          pageSize: pagination.pageSize,
+          hasMore,
+        }, 200, origin)
       }
 
       const viewCounts = await viewResponse.json()
@@ -117,13 +146,23 @@ export async function handleSelectionList(request, env, origin) {
         }
         return { ...selection, view_count: viewCount }
       })
-      return jsonResponse({ selections: selectionsWithCounts }, 200, origin)
+      return jsonResponse({
+        selections: selectionsWithCounts,
+        page: pagination.page,
+        pageSize: pagination.pageSize,
+        hasMore,
+      }, 200, origin)
     } catch (error) {
       console.error(JSON.stringify({
         message: 'Could not load selection view counts.',
         error: error instanceof Error ? error.message : String(error),
       }))
-      return jsonResponse({ selections: withUnavailableViewCounts(selections) }, 200, origin)
+      return jsonResponse({
+        selections: withUnavailableViewCounts(selections),
+        page: pagination.page,
+        pageSize: pagination.pageSize,
+        hasMore,
+      }, 200, origin)
     }
   } catch (error) {
     console.error(JSON.stringify({
