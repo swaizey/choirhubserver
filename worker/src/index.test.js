@@ -5,6 +5,7 @@ import { readFile } from 'node:fs/promises'
 import { test } from 'node:test'
 
 import { addLogoWatermark } from '../../../client/src/Songs/pdfWatermark.js'
+import { readPdfBytes } from './bulk-import.js'
 import worker from './index.js'
 
 const requireFromClient = createRequire(new URL('../../../client/package.json', import.meta.url))
@@ -41,6 +42,14 @@ function makeSelection() {
     })),
   }
 }
+
+test('bulk PDF reader accepts its configured size limit and rejects larger streams', async () => {
+  const withinLimit = new Blob([new Uint8Array([37, 80, 68, 70, 45])]).stream()
+  const overLimit = new Blob([new Uint8Array([37, 80, 68, 70, 45, 1])]).stream()
+
+  assert.equal((await readPdfBytes(withinLimit, 5)).byteLength, 5)
+  await assert.rejects(readPdfBytes(overLimit, 5), { name: 'RangeError' })
+})
 
 test('adds the ChoirHub watermark to every page and preserves the PDF page count', async () => {
   const source = await PDFDocument.create()

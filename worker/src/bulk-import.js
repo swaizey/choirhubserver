@@ -7,7 +7,8 @@ import {
 } from './http.js'
 
 const BULK_IMPORT_BATCH_SIZE = 50
-export const MAX_PDF_BYTES = 15 * 1024 * 1024
+export const MAX_PUBLIC_PDF_BYTES = 15 * 1024 * 1024
+export const MAX_BULK_PDF_BYTES = 40 * 1024 * 1024
 
 function extractDriveFolderId(value) {
   try {
@@ -141,7 +142,7 @@ function addPdfCorsHeaders(headers, origin) {
   headers.set('Vary', 'Origin')
 }
 
-export async function readPdfBytes(stream) {
+export async function readPdfBytes(stream, maxBytes = MAX_PUBLIC_PDF_BYTES) {
   const reader = stream.getReader()
   const chunks = []
   let totalBytes = 0
@@ -150,9 +151,9 @@ export async function readPdfBytes(stream) {
     const { done, value } = await reader.read()
     if (done) break
     totalBytes += value.byteLength
-    if (totalBytes > MAX_PDF_BYTES) {
+    if (totalBytes > maxBytes) {
       await reader.cancel()
-      throw new RangeError('PDF exceeds the 15 MB per-file limit.')
+      throw new RangeError(`PDF exceeds the ${maxBytes / (1024 * 1024)} MB per-file limit.`)
     }
     chunks.push(value)
   }
@@ -319,8 +320,8 @@ export async function handleBulkDownload(request, env, origin) {
   if (metadata.mimeType !== 'application/pdf' && !metadata.name?.toLowerCase().endsWith('.pdf')) {
     return jsonResponse({ error: 'The selected Drive file is not a PDF.' }, 400, origin)
   }
-  if (metadata.size && Number(metadata.size) > MAX_PDF_BYTES) {
-    return jsonResponse({ error: 'PDF exceeds the 15 MB per-file limit.' }, 413, origin)
+  if (metadata.size && Number(metadata.size) > MAX_BULK_PDF_BYTES) {
+    return jsonResponse({ error: 'Bulk-import PDFs must be 40 MB or smaller.' }, 413, origin)
   }
 
   let downloadResponse
@@ -382,8 +383,8 @@ export async function handleBulkPdfUpload(request, env, origin) {
     return jsonResponse({ error: 'A PDF body is required.' }, 400, origin)
   }
   const contentLength = Number(request.headers.get('Content-Length'))
-  if (Number.isFinite(contentLength) && contentLength > MAX_PDF_BYTES) {
-    return jsonResponse({ error: 'PDF exceeds the 15 MB per-file limit.' }, 413, origin)
+  if (Number.isFinite(contentLength) && contentLength > MAX_BULK_PDF_BYTES) {
+    return jsonResponse({ error: 'Bulk-import PDFs must be 40 MB or smaller.' }, 413, origin)
   }
 
   let existingResponse
@@ -427,7 +428,7 @@ export async function handleBulkPdfUpload(request, env, origin) {
   const objectKey = decodeURIComponent(new URL(fileUrl).pathname.split('/').slice(-2).join('/'))
 
   try {
-    const pdfBytes = await readPdfBytes(request.body)
+    const pdfBytes = await readPdfBytes(request.body, MAX_BULK_PDF_BYTES)
     await env.PDF_BUCKET.put(objectKey, pdfBytes, {
       httpMetadata: {
         contentType: 'application/pdf',

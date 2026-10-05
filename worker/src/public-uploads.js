@@ -1,7 +1,7 @@
 import { getSupabaseTableUrl, jsonResponse, supabaseRequest } from './http.js'
 import {
   makePublicObjectUrl,
-  MAX_PDF_BYTES,
+  MAX_PUBLIC_PDF_BYTES,
   readPdfBytes,
   validateCategory,
 } from './bulk-import.js'
@@ -49,7 +49,7 @@ export async function handlePublicPdfUpload(request, env, origin) {
   }
 
   const contentLength = Number(request.headers.get('Content-Length'))
-  if (Number.isFinite(contentLength) && contentLength > MAX_PDF_BYTES) {
+  if (Number.isFinite(contentLength) && contentLength > MAX_PUBLIC_PDF_BYTES) {
     return jsonResponse({ error: 'PDF exceeds the 15 MB per-file limit.' }, 413, origin)
   }
 
@@ -67,7 +67,7 @@ export async function handlePublicPdfUpload(request, env, origin) {
   }
 
   try {
-    const pdfBytes = await readPdfBytes(request.body)
+    const pdfBytes = await readPdfBytes(request.body, MAX_PUBLIC_PDF_BYTES)
     await env.PDF_BUCKET.put(objectKey, pdfBytes, {
       httpMetadata: {
         contentType: 'application/pdf',
