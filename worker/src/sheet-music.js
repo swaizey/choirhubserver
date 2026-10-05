@@ -34,8 +34,9 @@ export async function handleSheetMusicList(request, env, origin) {
     .replace(/\s+/g, ' ')
     .trim()
   const category = (url.searchParams.get('category') || '').trim()
-  const shuffleSeed = !search && !category
-    ? (url.searchParams.get('shuffle') || '').trim().slice(0, 100)
+  const recentOrder = url.searchParams.get('order') === 'recent'
+  const shuffleSeed = !search && !category && !recentOrder
+    ? (url.searchParams.get('shuffle') || 'all-songs-default').trim().slice(0, 100)
     : ''
   if (
     category.length > 120

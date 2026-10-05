@@ -210,8 +210,8 @@ test('lists saved sheet music and its actual R2 PDF URL from Supabase', async ()
     assert.equal(response.headers.get('Access-Control-Allow-Origin'), allowedOrigin)
     assert.equal(supabaseUrl.pathname, '/rest/v1/sheet_music')
     assert.equal(supabaseUrl.searchParams.get('select'), 'id,title,composer,category,r2_key,created_at')
-    assert.equal(supabaseUrl.searchParams.get('order'), 'created_at.desc,id.desc')
-    assert.equal(supabaseUrl.searchParams.get('limit'), '13')
+    assert.equal(supabaseUrl.searchParams.get('order'), 'id.asc')
+    assert.equal(supabaseUrl.searchParams.get('limit'), '1000')
     assert.equal(supabaseUrl.searchParams.get('offset'), '0')
     assert.deepEqual(data.sheetMusic, [{
       id: 'pdf-1',
@@ -224,6 +224,28 @@ test('lists saved sheet music and its actual R2 PDF URL from Supabase', async ()
     assert.equal(data.page, 1)
     assert.equal(data.pageSize, 12)
     assert.equal(data.hasMore, false)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('keeps recent ordering available for the composer editor', async () => {
+  const originalFetch = globalThis.fetch
+  let supabaseUrl
+  globalThis.fetch = async (url) => {
+    supabaseUrl = new URL(String(url))
+    return Response.json([])
+  }
+
+  try {
+    const response = await worker.fetch(
+      new Request('https://worker.example/api/sheet-music?page=1&pageSize=12&order=recent'),
+      env,
+    )
+
+    assert.equal(response.status, 200)
+    assert.equal(supabaseUrl.searchParams.get('order'), 'created_at.desc,id.desc')
+    assert.equal(supabaseUrl.searchParams.get('limit'), '13')
   } finally {
     globalThis.fetch = originalFetch
   }
