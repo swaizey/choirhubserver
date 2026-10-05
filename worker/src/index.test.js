@@ -322,6 +322,68 @@ test('downloads a catalogue PDF from R2 with a title-based ChoirHub filename', a
   }
 })
 
+test('returns sheet-music viewer metadata and streams byte ranges for PDF.js', async () => {
+  const originalFetch = globalThis.fetch
+  let supabaseUrl
+  let r2Options
+  const pdfBucket = {
+    async get(key, options) {
+      assert.equal(key, 'Advent & Christmas/song.pdf')
+      r2Options = options
+      return {
+        body: new Blob(['PDF range']).stream(),
+        size: 100,
+        range: { offset: 10, length: 9 },
+      }
+    },
+  }
+  globalThis.fetch = async (url) => {
+    supabaseUrl = new URL(String(url))
+    return Response.json([{
+      id: '123e4567-e89b-12d3-a456-426614174000',
+      title: 'Advent Song',
+      composer: 'ChoirHub',
+      category: 'Advent & Christmas',
+      r2_key: 'Advent & Christmas/song.pdf',
+      created_at: '2026-10-05T08:00:00Z',
+    }])
+  }
+
+  try {
+    const detailsResponse = await worker.fetch(
+      new Request('https://worker.example/api/sheet-music/123e4567-e89b-12d3-a456-426614174000'),
+      env,
+    )
+    const details = await detailsResponse.json()
+    assert.equal(detailsResponse.status, 200)
+    assert.equal(supabaseUrl.searchParams.get('id'), 'eq.123e4567-e89b-12d3-a456-426614174000')
+    assert.equal(details.sheetMusic.title, 'Advent Song')
+    assert.equal(details.sheetMusic.file_url, 'https://pdfs.example.com/Advent%20%26%20Christmas/song.pdf')
+    assert.equal(
+      details.sheetMusic.download_url,
+      '/api/sheet-music/123e4567-e89b-12d3-a456-426614174000/download',
+    )
+
+    const rangeResponse = await worker.fetch(
+      new Request('https://worker.example/api/sheet-music/123e4567-e89b-12d3-a456-426614174000/download', {
+        headers: {
+          Origin: allowedOrigin,
+          Range: 'bytes=10-18',
+        },
+      }),
+      { ...env, PDF_BUCKET: pdfBucket },
+    )
+    assert.equal(rangeResponse.status, 206)
+    assert.deepEqual(r2Options, { range: { offset: 10, length: 9 } })
+    assert.equal(rangeResponse.headers.get('Content-Range'), 'bytes 10-18/100')
+    assert.equal(rangeResponse.headers.get('Content-Length'), '9')
+    assert.equal(rangeResponse.headers.get('Access-Control-Allow-Origin'), allowedOrigin)
+    assert.equal(await rangeResponse.text(), 'PDF range')
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('rejects invalid pagination parameters', async () => {
   const response = await worker.fetch(
     new Request('https://worker.example/api/sheet-music?page=0&pageSize=500'),

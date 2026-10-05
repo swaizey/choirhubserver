@@ -6,7 +6,11 @@ import {
 import { jsonResponse } from './http.js'
 import { handlePublicPdfUpload } from './public-uploads.js'
 import { handleSelectionList, handleSelectionSubmission } from './selections.js'
-import { handleSheetMusicDownload, handleSheetMusicList } from './sheet-music.js'
+import {
+  handleSheetMusicDetails,
+  handleSheetMusicDownload,
+  handleSheetMusicList,
+} from './sheet-music.js'
 
 const routes = new Map([
   ['/api/selections', handleSelectionSubmission],
@@ -36,7 +40,8 @@ export default {
     const handler = routes.get(url.pathname)
     const isSheetMusicPath = url.pathname === '/api/sheet-music'
     const downloadMatch = url.pathname.match(/^\/api\/sheet-music\/([^/]+)\/download$/)
-    if (!handler && !isSheetMusicPath && !downloadMatch) {
+    const sheetMusicMatch = url.pathname.match(/^\/api\/sheet-music\/([^/]+)$/)
+    if (!handler && !isSheetMusicPath && !downloadMatch && !sheetMusicMatch) {
       return jsonResponse({ error: 'Not found.' }, 404, origin)
     }
 
@@ -54,6 +59,12 @@ export default {
       return handleSheetMusicDownload(request, env, origin, downloadMatch[1])
     }
     if (downloadMatch) {
+      return jsonResponse({ error: 'Method not allowed.' }, 405, origin)
+    }
+    if (sheetMusicMatch && request.method === 'GET') {
+      return handleSheetMusicDetails(env, origin, sheetMusicMatch[1])
+    }
+    if (sheetMusicMatch) {
       return jsonResponse({ error: 'Method not allowed.' }, 405, origin)
     }
     if (isSheetMusicPath) {

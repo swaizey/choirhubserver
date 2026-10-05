@@ -36,7 +36,7 @@ export function jsonResponse(body, status, origin) {
     headers.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
     headers.set(
       'Access-Control-Allow-Headers',
-      'Authorization, Content-Type, X-Drive-File-Id, X-Metadata-Title, X-Metadata-Composer, X-Metadata-Category',
+      'Authorization, Content-Type, Range, X-Drive-File-Id, X-Metadata-Title, X-Metadata-Composer, X-Metadata-Category',
     )
     headers.set('Vary', 'Origin')
   }

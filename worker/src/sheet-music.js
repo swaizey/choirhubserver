@@ -99,6 +99,74 @@ export async function handleSheetMusicList(request, env, origin) {
   }, 200, origin)
 }
 
+export async function handleSheetMusicDetails(env, origin, id) {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+    return jsonResponse({ error: 'Sheet music was not found.' }, 404, origin)
+  }
+  if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY || !env.R2_PUBLIC_BASE_URL) {
+    console.error(JSON.stringify({ message: 'Sheet music storage configuration is incomplete.' }))
+    return jsonResponse({ error: 'Sheet music storage is not configured.' }, 503, origin)
+  }
+
+  let response
+  try {
+    response = await supabaseRequest(
+      env,
+      getSupabaseTableUrl(env, 'sheet_music', {
+        select: 'id,title,composer,category,r2_key,created_at',
+        id: `eq.${id}`,
+        limit: '1',
+      }),
+    )
+  } catch (error) {
+    console.error(JSON.stringify({
+      message: 'Supabase sheet-music detail request failed.',
+      error: error instanceof Error ? error.message : String(error),
+    }))
+    return jsonResponse({ error: 'Could not load this sheet music.' }, 502, origin)
+  }
+  if (!response.ok) {
+    console.error(JSON.stringify({
+      message: 'Supabase rejected the sheet-music detail request.',
+      status: response.status,
+    }))
+    return jsonResponse({ error: 'Could not load this sheet music.' }, 502, origin)
+  }
+
+  try {
+    const rows = await response.json()
+    const record = Array.isArray(rows) ? rows[0] : null
+    if (
+      !record
+      || typeof record.id !== 'string'
+      || typeof record.title !== 'string'
+      || typeof record.composer !== 'string'
+      || typeof record.category !== 'string'
+      || typeof record.r2_key !== 'string'
+      || !record.r2_key.includes('/')
+    ) {
+      return jsonResponse({ error: 'Sheet music was not found.' }, 404, origin)
+    }
+    return jsonResponse({
+      sheetMusic: {
+        id: record.id,
+        title: record.title,
+        composer: record.composer,
+        category: record.category,
+        file_url: makePublicObjectUrl(env.R2_PUBLIC_BASE_URL, record.r2_key),
+        download_url: `/api/sheet-music/${encodeURIComponent(record.id)}/download`,
+        created_at: record.created_at,
+      },
+    }, 200, origin)
+  } catch (error) {
+    console.error(JSON.stringify({
+      message: 'Supabase returned invalid sheet-music details.',
+      error: error instanceof Error ? error.message : String(error),
+    }))
+    return jsonResponse({ error: 'Could not load this sheet music.' }, 502, origin)
+  }
+}
+
 function makeDownloadFilename(title) {
   const safeTitle = title
     .trim()
@@ -172,8 +240,29 @@ export async function handleSheetMusicDownload(request, env, origin, id) {
   }
 
   let object
+  const rangeHeader = request.headers.get('Range')
+  let requestedRange
+  if (rangeHeader) {
+    const match = rangeHeader.match(/^bytes=(\d*)-(\d*)$/)
+    if (!match || (!match[1] && !match[2])) {
+      return new Response(null, { status: 416, headers: { 'Accept-Ranges': 'bytes' } })
+    }
+    requestedRange = match[1]
+      ? {
+        offset: Number(match[1]),
+        ...(match[2] ? { length: Number(match[2]) - Number(match[1]) + 1 } : {}),
+      }
+      : { suffix: Number(match[2]) }
+    if (
+      Object.values(requestedRange).some((value) => !Number.isSafeInteger(value) || value < 0)
+      || ('length' in requestedRange && requestedRange.length < 1)
+      || ('suffix' in requestedRange && requestedRange.suffix < 1)
+    ) {
+      return new Response(null, { status: 416, headers: { 'Accept-Ranges': 'bytes' } })
+    }
+  }
   try {
-    object = await env.PDF_BUCKET.get(record.r2_key)
+    object = await env.PDF_BUCKET.get(record.r2_key, requestedRange ? { range: requestedRange } : undefined)
   } catch (error) {
     console.error(JSON.stringify({
       message: 'R2 sheet-music download failed.',
@@ -191,13 +280,27 @@ export async function handleSheetMusicDownload(request, env, origin, id) {
     'Content-Type': 'application/pdf',
     'Content-Disposition': `attachment; filename="${fallbackFilename}"; filename*=UTF-8''${encodeFileName(filename)}`,
     'Cache-Control': 'private, no-store',
+    'Accept-Ranges': 'bytes',
     'X-Content-Type-Options': 'nosniff',
   })
-  if (Number.isSafeInteger(object.size)) headers.set('Content-Length', String(object.size))
+  let status = 200
+  if (requestedRange) {
+    const offset = object.range?.offset ?? requestedRange.offset ?? 0
+    const length = object.range?.length ?? object.size
+    const totalSize = object.size
+    if (Number.isSafeInteger(totalSize) && Number.isSafeInteger(offset) && Number.isSafeInteger(length)) {
+      headers.set('Content-Range', `bytes ${offset}-${offset + length - 1}/${totalSize}`)
+      headers.set('Content-Length', String(length))
+      status = 206
+    }
+  } else if (Number.isSafeInteger(object.size)) {
+    headers.set('Content-Length', String(object.size))
+  }
   if (origin) {
     headers.set('Access-Control-Allow-Origin', origin)
+    headers.set('Access-Control-Expose-Headers', 'Accept-Ranges, Content-Length, Content-Range, Content-Disposition')
     headers.set('Vary', 'Origin')
   }
 
-  return new Response(object.body, { status: 200, headers })
+  return new Response(object.body, { status, headers })
 }
