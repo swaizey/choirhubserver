@@ -10,6 +10,7 @@ import worker from './index.js'
 const requireFromClient = createRequire(new URL('../../../client/package.json', import.meta.url))
 const { PDFDocument } = requireFromClient('pdf-lib')
 const allowedOrigin = 'http://localhost:5173'
+const testBulkToken = 'admin-token'
 const env = {
   SUPABASE_URL: 'https://project.supabase.co',
   SUPABASE_SERVICE_ROLE_KEY: 'test-service-role-key',
@@ -248,7 +249,7 @@ test('requires the administrator token for bulk imports', async () => {
     }),
     {
       ...env,
-      BULK_UPLOAD_TOKEN: 'admin-token',
+      BULK_UPLOAD_TOKEN: testBulkToken,
     },
   )
 
@@ -273,7 +274,7 @@ test('accepts account-qualified Google Drive folder URLs', async () => {
       new Request('https://worker.example/api/bulk-import', {
         method: 'POST',
         headers: {
-          Authorization: 'Bearer admin-token',
+          Authorization: `Bearer ${testBulkToken}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
@@ -334,7 +335,7 @@ test('lists and prepares imports for folders with more than 50 PDFs in batches',
       new Request('https://worker.example/api/bulk-import', {
         method: 'POST',
         headers: {
-          Authorization: 'Bearer admin-token',
+          Authorization: `Bearer ${testBulkToken}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
@@ -345,13 +346,14 @@ test('lists and prepares imports for folders with more than 50 PDFs in batches',
       {
         ...env,
         GOOGLE_DRIVE_API_KEY: 'test-drive-api-key',
-        BULK_UPLOAD_TOKEN: 'admin-token',
+        BULK_UPLOAD_TOKEN: testBulkToken,
       },
     )
     const data = await response.json()
 
     assert.equal(response.status, 200)
     assert.equal(data.files.length, 51)
+    assert.match(data.files[0].downloadTicket, /^\d{13}\.[0-9a-f]{64}$/)
     assert.equal(data.batchSize, 50)
     assert.equal(data.skipped, 0)
     assert.equal(drivePageCount, 2)
@@ -381,7 +383,6 @@ test('imports Drive PDF metadata, stores the PDF in R2, and saves its public URL
         name: 'hymn.pdf',
         mimeType: 'application/pdf',
         size: `${pdfBytes.byteLength}`,
-        parents: ['folder-id'],
       })
     }
     if (url.hostname === 'www.googleapis.com' && url.searchParams.get('alt') === 'media') {
@@ -420,7 +421,7 @@ test('imports Drive PDF metadata, stores the PDF in R2, and saves its public URL
       new Request('https://worker.example/api/bulk-import', {
         method: 'POST',
         headers: {
-          Authorization: 'Bearer admin-token',
+          Authorization: `Bearer ${testBulkToken}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
@@ -443,7 +444,11 @@ test('imports Drive PDF metadata, stores the PDF in R2, and saves its public URL
           Authorization: 'Bearer admin-token',
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ folderId: 'folder-id', fileId: 'drive-file-1' }),
+        body: JSON.stringify({
+          folderId: 'folder-id',
+          fileId: 'drive-file-1',
+          downloadTicket: listData.files[0].downloadTicket,
+        }),
       }),
       testEnv,
     )
@@ -475,6 +480,40 @@ test('imports Drive PDF metadata, stores the PDF in R2, and saves its public URL
     assert.match(supabaseRow.file_url, /^https:\/\/pdfs\.example\.com\/Advent%20%26%20Christmas\//)
     assert.equal(supabaseRow.drive_file_id, 'drive-file-1')
     assert.equal(uploadData.fileUrl, supabaseRow.file_url)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('rejects Drive downloads without a valid folder-list ticket', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () => {
+    throw new Error('Drive should not be contacted for an invalid download ticket.')
+  }
+
+  try {
+    const response = await worker.fetch(
+      new Request('https://worker.example/api/bulk-import/download', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${testBulkToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          folderId: 'folder-id',
+          fileId: 'drive-file-1',
+          downloadTicket: 'invalid-ticket',
+        }),
+      }),
+      {
+        ...env,
+        GOOGLE_DRIVE_API_KEY: 'test-drive-api-key',
+        BULK_UPLOAD_TOKEN: 'admin-token',
+      },
+    )
+
+    assert.equal(response.status, 403)
+    assert.match((await response.json()).error, /current import list/)
   } finally {
     globalThis.fetch = originalFetch
   }

@@ -31,6 +31,40 @@ function makeDriveApiUrl(path, params, apiKey) {
   return url
 }
 
+async function createDriveDownloadTicket(folderId, fileId, expiresAt, bulkToken) {
+  const encoder = new TextEncoder()
+  const key = await crypto.subtle.importKey(
+    'raw',
+    encoder.encode(bulkToken),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  )
+  const payload = `${folderId}\n${fileId}\n${expiresAt}`
+  const signature = new Uint8Array(
+    await crypto.subtle.sign('HMAC', key, encoder.encode(payload)),
+  )
+  const signatureHex = Array.from(signature, (byte) => byte.toString(16).padStart(2, '0')).join('')
+  return `${expiresAt}.${signatureHex}`
+}
+
+async function isValidDriveDownloadTicket(ticket, folderId, fileId, bulkToken) {
+  if (typeof ticket !== 'string') return false
+  const match = ticket.match(/^(\d{13})\.([0-9a-f]{64})$/)
+  if (!match) return false
+
+  const expiresAt = Number(match[1])
+  if (!Number.isSafeInteger(expiresAt) || expiresAt <= Date.now()) return false
+
+  const expected = await createDriveDownloadTicket(folderId, fileId, expiresAt, bulkToken)
+  const expectedSignature = expected.slice(expected.indexOf('.') + 1)
+  let difference = 0
+  for (let index = 0; index < expectedSignature.length; index += 1) {
+    difference |= expectedSignature.charCodeAt(index) ^ match[2].charCodeAt(index)
+  }
+  return difference === 0
+}
+
 async function listDrivePdfs(folderId, apiKey) {
   const files = []
   let pageToken
@@ -213,8 +247,20 @@ export async function handleBulkImport(request, env, origin) {
   }
 
   const pendingFiles = files.filter((file) => !existingIds.has(file.id))
+  const ticketExpiry = Date.now() + 24 * 60 * 60 * 1000
+  const filesWithTickets = await Promise.all(pendingFiles.map(async ({ id, name, size }) => ({
+    id,
+    name,
+    size,
+    downloadTicket: await createDriveDownloadTicket(
+      folderId,
+      id,
+      ticketExpiry,
+      env.BULK_UPLOAD_TOKEN,
+    ),
+  })))
   return jsonResponse({
-    files: pendingFiles.map(({ id, name, size }) => ({ id, name, size })),
+    files: filesWithTickets,
     skipped: files.length - pendingFiles.length,
     batchSize: BULK_IMPORT_BATCH_SIZE,
   }, 200, origin)
@@ -235,7 +281,7 @@ export async function handleBulkDownload(request, env, origin) {
   const body = await readJsonBody(request)
   if (body.error) return jsonResponse({ error: body.error }, body.status, origin)
 
-  const { folderId, fileId } = body.data || {}
+  const { folderId, fileId, downloadTicket } = body.data || {}
   if (
     typeof folderId !== 'string'
     || !/^[a-zA-Z0-9_-]+$/.test(folderId)
@@ -243,6 +289,9 @@ export async function handleBulkDownload(request, env, origin) {
     || !/^[a-zA-Z0-9_-]+$/.test(fileId)
   ) {
     return jsonResponse({ error: 'A valid Drive folder ID and PDF file ID are required.' }, 400, origin)
+  }
+  if (!await isValidDriveDownloadTicket(downloadTicket, folderId, fileId, env.BULK_UPLOAD_TOKEN)) {
+    return jsonResponse({ error: 'This PDF is not in the current import list. Refresh the folder list and try again.' }, 403, origin)
   }
 
   let metadataResponse
@@ -264,7 +313,7 @@ export async function handleBulkDownload(request, env, origin) {
   }
 
   const metadata = await metadataResponse.json()
-  if (!metadata.parents?.includes(folderId)) {
+  if (Array.isArray(metadata.parents) && !metadata.parents.includes(folderId)) {
     return jsonResponse({ error: 'The PDF is not in the selected Drive folder.' }, 400, origin)
   }
   if (metadata.mimeType !== 'application/pdf' && !metadata.name?.toLowerCase().endsWith('.pdf')) {
