@@ -31,9 +31,9 @@ begin
   return query
   select requested.id, count(views.selection_id)::bigint
   from (
-    select distinct selection_id as id
+    select distinct requested.selection_id as id
     from unnest(p_selection_ids) as requested(selection_id)
-    where selection_id is not null
+    where requested.selection_id is not null
   ) as requested
   left join public.selection_views as views
     on views.selection_id = requested.id
