@@ -8,6 +8,14 @@ import {
 } from './http.js'
 import { makePublicObjectUrl } from './bulk-import.js'
 
+function getShuffleRank(seed, id) {
+  let hash = 2166136261
+  for (const character of `${seed}:${id}`) {
+    hash = Math.imul(hash ^ character.charCodeAt(0), 16777619)
+  }
+  return hash >>> 0
+}
+
 export async function handleSheetMusicList(request, env, origin) {
   if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY || !env.R2_PUBLIC_BASE_URL) {
     console.error(JSON.stringify({ message: 'Supabase Worker configuration is missing.' }))
@@ -26,6 +34,9 @@ export async function handleSheetMusicList(request, env, origin) {
     .replace(/\s+/g, ' ')
     .trim()
   const category = (url.searchParams.get('category') || '').trim()
+  const shuffleSeed = !search && !category
+    ? (url.searchParams.get('shuffle') || '').trim().slice(0, 100)
+    : ''
   if (
     category.length > 120
     || (category && !/^[\p{L}\p{N}\s&'’-]+$/u.test(category))
@@ -47,12 +58,61 @@ export async function handleSheetMusicList(request, env, origin) {
   }
   if (category) query.category = `eq.${category}`
 
-  let response
+  let rows
+  let hasMore
+  let records
   try {
-    response = await supabaseRequest(
-      env,
-      getSupabaseTableUrl(env, 'sheet_music', query),
-    )
+    if (shuffleSeed) {
+      const allRows = []
+      const batchSize = 1000
+      let offset = 0
+      while (true) {
+        const response = await supabaseRequest(
+          env,
+          getSupabaseTableUrl(env, 'sheet_music', {
+            select: query.select,
+            order: 'id.asc',
+            limit: String(batchSize),
+            offset: String(offset),
+          }),
+        )
+        if (!response.ok) {
+          console.error(JSON.stringify({
+            message: 'Supabase rejected the random sheet-music list request.',
+            status: response.status,
+          }))
+          return jsonResponse({ error: 'Could not load sheet music. Please try again.' }, 502, origin)
+        }
+        const batch = await response.json()
+        if (!Array.isArray(batch)) throw new TypeError('Supabase returned an invalid sheet-music list.')
+        allRows.push(...batch)
+        if (batch.length < batchSize) break
+        offset += batch.length
+      }
+
+      allRows.sort((left, right) => (
+        getShuffleRank(shuffleSeed, left.id) - getShuffleRank(shuffleSeed, right.id)
+        || left.id.localeCompare(right.id)
+      ))
+      hasMore = allRows.length > pagination.offset + pagination.pageSize
+      rows = allRows.slice(pagination.offset, pagination.offset + pagination.pageSize)
+    } else {
+      const response = await supabaseRequest(
+        env,
+        getSupabaseTableUrl(env, 'sheet_music', query),
+      )
+      if (!response.ok) {
+        console.error(JSON.stringify({
+          message: 'Supabase rejected the sheet-music list request.',
+          status: response.status,
+        }))
+        return jsonResponse({ error: 'Could not load sheet music. Please try again.' }, 502, origin)
+      }
+      rows = await response.json()
+      if (!Array.isArray(rows)) throw new TypeError('Supabase returned an invalid sheet-music list.')
+      hasMore = rows.length > pagination.pageSize
+      rows = rows.slice(0, pagination.pageSize)
+    }
   } catch (error) {
     console.error(JSON.stringify({
       message: 'Supabase sheet-music list request failed.',
@@ -61,21 +121,8 @@ export async function handleSheetMusicList(request, env, origin) {
     return jsonResponse({ error: 'Could not load sheet music. Please try again.' }, 502, origin)
   }
 
-  if (!response.ok) {
-    console.error(JSON.stringify({
-      message: 'Supabase rejected the sheet-music list request.',
-      status: response.status,
-    }))
-    return jsonResponse({ error: 'Could not load sheet music. Please try again.' }, 502, origin)
-  }
-
-  let records
-  let hasMore
   try {
-    const rows = await response.json()
-    if (!Array.isArray(rows)) throw new TypeError('Supabase returned an invalid sheet-music list.')
-    hasMore = rows.length > pagination.pageSize
-    records = rows.slice(0, pagination.pageSize).map((record) => {
+    records = rows.map((record) => {
       if (
         typeof record.id !== 'string'
         || typeof record.title !== 'string'

@@ -278,6 +278,66 @@ test('paginates sheet music and applies catalogue search before selecting a page
   }
 })
 
+test('randomizes all-song results and keeps the shuffled order stable across pages', async () => {
+  const originalFetch = globalThis.fetch
+  const supabaseRows = [
+    {
+      id: 'pdf-random-a',
+      title: 'Alpha',
+      composer: 'Composer A',
+      category: 'Category A',
+      r2_key: 'Category A/alpha.pdf',
+      created_at: '2026-10-05T08:00:00Z',
+    },
+    {
+      id: 'pdf-random-b',
+      title: 'Bravo',
+      composer: 'Composer B',
+      category: 'Category B',
+      r2_key: 'Category B/bravo.pdf',
+      created_at: '2026-10-04T08:00:00Z',
+    },
+    {
+      id: 'pdf-random-c',
+      title: 'Charlie',
+      composer: 'Composer C',
+      category: 'Category C',
+      r2_key: 'Category C/charlie.pdf',
+      created_at: '2026-10-03T08:00:00Z',
+    },
+  ]
+  let supabaseUrl
+  globalThis.fetch = async (url) => {
+    supabaseUrl = new URL(String(url))
+    return Response.json(supabaseRows)
+  }
+
+  try {
+    const pageOneResponse = await worker.fetch(
+      new Request('https://worker.example/api/sheet-music?page=1&pageSize=2&shuffle=test-seed'),
+      env,
+    )
+    const pageOne = await pageOneResponse.json()
+    const pageTwoResponse = await worker.fetch(
+      new Request('https://worker.example/api/sheet-music?page=2&pageSize=2&shuffle=test-seed'),
+      env,
+    )
+    const pageTwo = await pageTwoResponse.json()
+    const resultIds = [...pageOne.sheetMusic, ...pageTwo.sheetMusic].map(({ id }) => id)
+
+    assert.equal(pageOneResponse.status, 200)
+    assert.equal(pageTwoResponse.status, 200)
+    assert.equal(supabaseUrl.searchParams.get('order'), 'id.asc')
+    assert.equal(supabaseUrl.searchParams.get('limit'), '1000')
+    assert.equal(pageOne.hasMore, true)
+    assert.equal(pageTwo.hasMore, false)
+    assert.equal(new Set(resultIds).size, supabaseRows.length)
+    assert.deepEqual(new Set(resultIds), new Set(supabaseRows.map(({ id }) => id)))
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('matches title searches that omit spaces and punctuation', async () => {
   const originalFetch = globalThis.fetch
   let supabaseUrl
