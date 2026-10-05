@@ -268,7 +268,7 @@ test('paginates sheet music and applies catalogue search before selecting a page
       supabaseUrl.searchParams.get('or'),
       '(title.ilike.*Advent & Christmas*,composer.ilike.*Advent & Christmas*,category.ilike.*Advent & Christmas*)',
     )
-    assert.equal(supabaseUrl.searchParams.get('category'), 'eq."Advent & Christmas"')
+    assert.equal(supabaseUrl.searchParams.get('category'), 'eq.Advent & Christmas')
     assert.equal(data.page, 2)
     assert.equal(data.pageSize, 1)
     assert.equal(data.sheetMusic.length, 1)

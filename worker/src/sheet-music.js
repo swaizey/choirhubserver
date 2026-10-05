@@ -26,7 +26,7 @@ export async function handleSheetMusicList(request, env, origin) {
   const category = (url.searchParams.get('category') || '').trim()
   if (
     category.length > 120
-    || /[\u0000-\u001f\u007f]/u.test(category)
+    || (category && !/^[\p{L}\p{N}\s&'’-]+$/u.test(category))
   ) {
     return jsonResponse({ error: 'Category contains invalid characters.' }, 400, origin)
   }
@@ -41,10 +41,7 @@ export async function handleSheetMusicList(request, env, origin) {
     const pattern = `*${search}*`
     query.or = `(title.ilike.${pattern},composer.ilike.${pattern},category.ilike.${pattern})`
   }
-  if (category) {
-    const quotedCategory = category.replace(/(["\\])/g, '\\$1')
-    query.category = `eq."${quotedCategory}"`
-  }
+  if (category) query.category = `eq.${category}`
 
   let response
   try {
