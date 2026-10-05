@@ -77,7 +77,7 @@ test('preflight returns CORS headers for an allowed origin', async () => {
 
   assert.equal(response.status, 204)
   assert.equal(response.headers.get('Access-Control-Allow-Origin'), allowedOrigin)
-  assert.equal(response.headers.get('Access-Control-Allow-Methods'), 'GET, POST, OPTIONS')
+  assert.equal(response.headers.get('Access-Control-Allow-Methods'), 'GET, POST, PATCH, OPTIONS')
 })
 
 test('lists saved selections from Supabase', async () => {
@@ -341,6 +341,106 @@ test('lists distinct sheet-music categories from Supabase', async () => {
   } finally {
     globalThis.fetch = originalFetch
   }
+})
+
+test('requires the administrator token to update a sheet-music composer', async () => {
+  const originalFetch = globalThis.fetch
+  let supabaseUrl
+  let updateOptions
+  globalThis.fetch = async (url, options) => {
+    supabaseUrl = new URL(String(url))
+    updateOptions = options
+    return Response.json([{
+      id: '12345678-1234-1234-1234-123456789012',
+      title: 'Song title',
+      composer: 'Updated composer',
+      category: 'Advent & Christmas',
+    }])
+  }
+
+  try {
+    const unauthorizedResponse = await worker.fetch(
+      new Request('https://worker.example/api/sheet-music/12345678-1234-1234-1234-123456789012/composer', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ composer: 'Updated composer' }),
+      }),
+      { ...env, BULK_UPLOAD_TOKEN: testBulkToken },
+    )
+    assert.equal(unauthorizedResponse.status, 401)
+
+    const response = await worker.fetch(
+      new Request('https://worker.example/api/sheet-music/12345678-1234-1234-1234-123456789012/composer', {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${testBulkToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ composer: ' Updated composer ' }),
+      }),
+      { ...env, BULK_UPLOAD_TOKEN: testBulkToken },
+    )
+    const data = await response.json()
+
+    assert.equal(response.status, 200)
+    assert.equal(supabaseUrl.searchParams.get('id'), 'eq.12345678-1234-1234-1234-123456789012')
+    assert.equal(updateOptions.method, 'PATCH')
+    assert.equal(updateOptions.headers.Prefer, 'return=representation')
+    assert.deepEqual(JSON.parse(updateOptions.body), { composer: 'Updated composer' })
+    assert.equal(data.sheetMusic.composer, 'Updated composer')
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('normalizes only the legacy Christmas category with the administrator token', async () => {
+  const originalFetch = globalThis.fetch
+  let supabaseUrl
+  let updateOptions
+  globalThis.fetch = async (url, options) => {
+    supabaseUrl = new URL(String(url))
+    updateOptions = options
+    return Response.json([{ id: 'pdf-1' }, { id: 'pdf-2' }])
+  }
+
+  try {
+    const response = await worker.fetch(
+      new Request('https://worker.example/api/admin/normalize-christmas-category', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${testBulkToken}` },
+      }),
+      { ...env, BULK_UPLOAD_TOKEN: testBulkToken },
+    )
+    const data = await response.json()
+
+    assert.equal(response.status, 200)
+    assert.equal(supabaseUrl.searchParams.get('category'), 'eq.Advent & Christmass')
+    assert.equal(updateOptions.method, 'PATCH')
+    assert.deepEqual(JSON.parse(updateOptions.body), { category: 'Advent & Christmas' })
+    assert.equal(data.updatedCount, 2)
+    assert.equal(data.category, 'Advent & Christmas')
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('preflights composer updates with PATCH and Authorization headers', async () => {
+  const response = await worker.fetch(
+    new Request('https://worker.example/api/sheet-music/12345678-1234-1234-1234-123456789012/composer', {
+      method: 'OPTIONS',
+      headers: {
+        Origin: allowedOrigin,
+        'Access-Control-Request-Method': 'PATCH',
+        'Access-Control-Request-Headers': 'authorization,content-type',
+      },
+    }),
+    env,
+  )
+
+  assert.equal(response.status, 204)
+  assert.equal(response.headers.get('Access-Control-Allow-Origin'), allowedOrigin)
+  assert.match(response.headers.get('Access-Control-Allow-Methods'), /PATCH/)
+  assert.match(response.headers.get('Access-Control-Allow-Headers'), /Authorization/)
 })
 
 test('downloads a catalogue PDF from R2 with a title-based ChoirHub filename', async () => {

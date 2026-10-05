@@ -1,7 +1,9 @@
 import {
   getSupabaseTableUrl,
+  isBulkUploadAuthorized,
   jsonResponse,
   parsePagination,
+  readJsonBody,
   supabaseRequest,
 } from './http.js'
 import { makePublicObjectUrl } from './bulk-import.js'
@@ -228,6 +230,141 @@ export async function handleSheetMusicDetails(env, origin, id) {
       error: error instanceof Error ? error.message : String(error),
     }))
     return jsonResponse({ error: 'Could not load this sheet music.' }, 502, origin)
+  }
+}
+
+export async function handleSheetMusicComposerUpdate(request, env, origin, id) {
+  if (!await isBulkUploadAuthorized(request, env)) {
+    return jsonResponse({ error: 'A valid administrator token is required.' }, 401, origin)
+  }
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+    return jsonResponse({ error: 'Sheet music was not found.' }, 404, origin)
+  }
+  if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) {
+    console.error(JSON.stringify({ message: 'Supabase Worker configuration is missing.' }))
+    return jsonResponse({ error: 'Sheet music updates are not configured.' }, 503, origin)
+  }
+  if (request.headers.get('Content-Type')?.split(';')[0].trim() !== 'application/json') {
+    return jsonResponse({ error: 'Content-Type must be application/json.' }, 415, origin)
+  }
+
+  const body = await readJsonBody(request)
+  if (body.error) return jsonResponse({ error: body.error }, body.status, origin)
+  if (
+    !body.data
+    || typeof body.data.composer !== 'string'
+    || body.data.composer.trim().length > 160
+  ) {
+    return jsonResponse({ error: 'Composer must be a string of 160 characters or fewer.' }, 400, origin)
+  }
+  const composer = body.data.composer.trim()
+
+  let response
+  try {
+    response = await supabaseRequest(
+      env,
+      getSupabaseTableUrl(env, 'sheet_music', {
+        id: `eq.${id}`,
+        select: 'id,title,composer,category',
+      }),
+      {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Prefer: 'return=representation',
+        },
+        body: JSON.stringify({ composer }),
+      },
+    )
+  } catch (error) {
+    console.error(JSON.stringify({
+      message: 'Supabase sheet-music composer update failed.',
+      error: error instanceof Error ? error.message : String(error),
+    }))
+    return jsonResponse({ error: 'Could not update the composer. Please try again.' }, 502, origin)
+  }
+  if (!response.ok) {
+    console.error(JSON.stringify({
+      message: 'Supabase rejected the sheet-music composer update.',
+      status: response.status,
+    }))
+    return jsonResponse({ error: 'Could not update the composer. Please try again.' }, 502, origin)
+  }
+
+  try {
+    const rows = await response.json()
+    const record = Array.isArray(rows) ? rows[0] : null
+    if (!record) return jsonResponse({ error: 'Sheet music was not found.' }, 404, origin)
+    return jsonResponse({
+      sheetMusic: {
+        id: record.id,
+        title: record.title,
+        composer: record.composer,
+        category: record.category,
+      },
+    }, 200, origin)
+  } catch (error) {
+    console.error(JSON.stringify({
+      message: 'Supabase returned invalid composer update data.',
+      error: error instanceof Error ? error.message : String(error),
+    }))
+    return jsonResponse({ error: 'Could not confirm the composer update.' }, 502, origin)
+  }
+}
+
+export async function handleChristmasCategoryNormalization(request, env, origin) {
+  if (!await isBulkUploadAuthorized(request, env)) {
+    return jsonResponse({ error: 'A valid administrator token is required.' }, 401, origin)
+  }
+  if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) {
+    console.error(JSON.stringify({ message: 'Supabase Worker configuration is missing.' }))
+    return jsonResponse({ error: 'Category updates are not configured.' }, 503, origin)
+  }
+
+  let response
+  try {
+    response = await supabaseRequest(
+      env,
+      getSupabaseTableUrl(env, 'sheet_music', {
+        category: 'eq.Advent & Christmass',
+      }),
+      {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Prefer: 'return=representation',
+        },
+        body: JSON.stringify({ category: 'Advent & Christmas' }),
+      },
+    )
+  } catch (error) {
+    console.error(JSON.stringify({
+      message: 'Supabase Christmas-category normalization failed.',
+      error: error instanceof Error ? error.message : String(error),
+    }))
+    return jsonResponse({ error: 'Could not update the category. Please try again.' }, 502, origin)
+  }
+  if (!response.ok) {
+    console.error(JSON.stringify({
+      message: 'Supabase rejected the Christmas-category normalization.',
+      status: response.status,
+    }))
+    return jsonResponse({ error: 'Could not update the category. Please try again.' }, 502, origin)
+  }
+
+  try {
+    const rows = await response.json()
+    if (!Array.isArray(rows)) throw new TypeError('Supabase returned an invalid category update.')
+    return jsonResponse({
+      updatedCount: rows.length,
+      category: 'Advent & Christmas',
+    }, 200, origin)
+  } catch (error) {
+    console.error(JSON.stringify({
+      message: 'Supabase returned invalid category update data.',
+      error: error instanceof Error ? error.message : String(error),
+    }))
+    return jsonResponse({ error: 'Could not confirm the category update.' }, 502, origin)
   }
 }
 

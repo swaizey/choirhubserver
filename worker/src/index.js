@@ -7,7 +7,9 @@ import { jsonResponse } from './http.js'
 import { handlePublicPdfUpload } from './public-uploads.js'
 import { handleSelectionList, handleSelectionSubmission } from './selections.js'
 import {
+  handleChristmasCategoryNormalization,
   handleSheetMusicCategories,
+  handleSheetMusicComposerUpdate,
   handleSheetMusicDetails,
   handleSheetMusicDownload,
   handleSheetMusicList,
@@ -41,9 +43,19 @@ export default {
     const handler = routes.get(url.pathname)
     const isSheetMusicPath = url.pathname === '/api/sheet-music'
     const isSheetMusicCategoriesPath = url.pathname === '/api/sheet-music/categories'
+    const isChristmasCategoryNormalizationPath = url.pathname === '/api/admin/normalize-christmas-category'
+    const composerUpdateMatch = url.pathname.match(/^\/api\/sheet-music\/([^/]+)\/composer$/)
     const downloadMatch = url.pathname.match(/^\/api\/sheet-music\/([^/]+)\/download$/)
     const sheetMusicMatch = url.pathname.match(/^\/api\/sheet-music\/([^/]+)$/)
-    if (!handler && !isSheetMusicPath && !isSheetMusicCategoriesPath && !downloadMatch && !sheetMusicMatch) {
+    if (
+      !handler
+      && !isSheetMusicPath
+      && !isSheetMusicCategoriesPath
+      && !isChristmasCategoryNormalizationPath
+      && !composerUpdateMatch
+      && !downloadMatch
+      && !sheetMusicMatch
+    ) {
       return jsonResponse({ error: 'Not found.' }, 404, origin)
     }
 
@@ -61,6 +73,18 @@ export default {
       return handleSheetMusicCategories(env, origin)
     }
     if (isSheetMusicCategoriesPath) {
+      return jsonResponse({ error: 'Method not allowed.' }, 405, origin)
+    }
+    if (isChristmasCategoryNormalizationPath && request.method === 'POST') {
+      return handleChristmasCategoryNormalization(request, env, origin)
+    }
+    if (isChristmasCategoryNormalizationPath) {
+      return jsonResponse({ error: 'Method not allowed.' }, 405, origin)
+    }
+    if (composerUpdateMatch && request.method === 'PATCH') {
+      return handleSheetMusicComposerUpdate(request, env, origin, composerUpdateMatch[1])
+    }
+    if (composerUpdateMatch) {
       return jsonResponse({ error: 'Method not allowed.' }, 405, origin)
     }
     if (downloadMatch && request.method === 'GET') {
