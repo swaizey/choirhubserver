@@ -20,9 +20,16 @@ export async function handleSheetMusicList(request, env, origin) {
   const search = (url.searchParams.get('q') || '')
     .trim()
     .slice(0, 100)
-    .replace(/[^\p{L}\p{N}\s'-]/gu, ' ')
+    .replace(/[^\p{L}\p{N}\s&'’-]/gu, ' ')
     .replace(/\s+/g, ' ')
     .trim()
+  const category = (url.searchParams.get('category') || '').trim()
+  if (
+    category.length > 120
+    || /[\u0000-\u001f\u007f]/u.test(category)
+  ) {
+    return jsonResponse({ error: 'Category contains invalid characters.' }, 400, origin)
+  }
 
   const query = {
     select: 'id,title,composer,category,r2_key,created_at',
@@ -33,6 +40,10 @@ export async function handleSheetMusicList(request, env, origin) {
   if (search) {
     const pattern = `*${search}*`
     query.or = `(title.ilike.${pattern},composer.ilike.${pattern},category.ilike.${pattern})`
+  }
+  if (category) {
+    const quotedCategory = category.replace(/(["\\])/g, '\\$1')
+    query.category = `eq."${quotedCategory}"`
   }
 
   let response
@@ -97,6 +108,60 @@ export async function handleSheetMusicList(request, env, origin) {
     pageSize: pagination.pageSize,
     hasMore,
   }, 200, origin)
+}
+
+export async function handleSheetMusicCategories(env, origin) {
+  if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) {
+    console.error(JSON.stringify({ message: 'Supabase Worker configuration is missing.' }))
+    return jsonResponse({ error: 'Sheet music categories are not configured.' }, 503, origin)
+  }
+
+  const categories = new Set()
+  const pageSize = 1000
+  let offset = 0
+
+  try {
+    while (true) {
+      const response = await supabaseRequest(
+        env,
+        getSupabaseTableUrl(env, 'sheet_music', {
+          select: 'category',
+          category: 'not.is.null',
+          order: 'category.asc',
+          limit: String(pageSize),
+          offset: String(offset),
+        }),
+      )
+      if (!response.ok) {
+        console.error(JSON.stringify({
+          message: 'Supabase rejected the sheet-music category request.',
+          status: response.status,
+        }))
+        return jsonResponse({ error: 'Could not load categories. Please try again.' }, 502, origin)
+      }
+
+      const rows = await response.json()
+      if (!Array.isArray(rows)) throw new TypeError('Supabase returned an invalid category list.')
+      for (const row of rows) {
+        if (typeof row.category !== 'string') {
+          throw new TypeError('Supabase returned an invalid sheet-music category.')
+        }
+        const category = row.category.trim()
+        if (category) categories.add(category)
+      }
+
+      if (rows.length < pageSize) break
+      offset += pageSize
+    }
+  } catch (error) {
+    console.error(JSON.stringify({
+      message: 'Supabase sheet-music category request failed.',
+      error: error instanceof Error ? error.message : String(error),
+    }))
+    return jsonResponse({ error: 'Could not load categories. Please try again.' }, 502, origin)
+  }
+
+  return jsonResponse({ categories: [...categories].sort((left, right) => left.localeCompare(right)) }, 200, origin)
 }
 
 export async function handleSheetMusicDetails(env, origin, id) {
