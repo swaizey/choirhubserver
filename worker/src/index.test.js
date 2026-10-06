@@ -7,6 +7,7 @@ import { test } from 'node:test'
 import { addLogoWatermark } from '../../../client/src/Songs/pdfWatermark.js'
 import { readPdfBytes } from './bulk-import.js'
 import worker from './index.js'
+import { storePdfIfAbsent } from './pdf-storage.js'
 
 const requireFromClient = createRequire(new URL('../../../client/package.json', import.meta.url))
 const { PDFDocument } = requireFromClient('pdf-lib')
@@ -50,6 +51,22 @@ test('bulk PDF reader accepts its configured size limit and rejects larger strea
 
   assert.equal((await readPdfBytes(withinLimit, 5)).byteLength, 5)
   await assert.rejects(readPdfBytes(overLimit, 5), { name: 'RangeError' })
+})
+
+test('conditional R2 write reuses an object created after the existence check', async () => {
+  let putOptions
+  const bucket = {
+    async head() {
+      return null
+    },
+    async put(key, bytes, options) {
+      putOptions = options
+      return null
+    },
+  }
+
+  assert.equal(await storePdfIfAbsent(bucket, 'pdfs/content.pdf', new Uint8Array([37, 80, 68, 70, 45])), true)
+  assert.deepEqual(putOptions.onlyIf, { etagDoesNotMatch: '*' })
 })
 
 test('adds the ChoirHub watermark to every page and preserves the PDF page count', async () => {
@@ -922,8 +939,12 @@ test('imports Drive PDF metadata, stores the PDF in R2, and saves its public URL
     BULK_UPLOAD_TOKEN: 'admin-token',
     R2_PUBLIC_BASE_URL: 'https://pdfs.example.com',
     PDF_BUCKET: {
+      async head(key) {
+        return storedObjects.has(key) ? { key } : null
+      },
       async put(key, stream) {
         storedObjects.set(key, await new Response(stream).arrayBuffer())
+        return { key }
       },
       async delete(key) {
         storedObjects.delete(key)
@@ -992,9 +1013,10 @@ test('imports Drive PDF metadata, stores the PDF in R2, and saves its public URL
     assert.equal(supabaseRow.title, 'Hymn of Hope')
     assert.equal(supabaseRow.composer, 'A. Composer')
     assert.equal(supabaseRow.category, 'Advent & Christmas')
-    assert.match(supabaseRow.file_url, /^https:\/\/pdfs\.example\.com\/Advent%20%26%20Christmas\//)
+    assert.match(supabaseRow.file_url, /^https:\/\/pdfs\.example\.com\/pdfs\/[0-9a-f]{64}\.pdf$/)
     assert.equal(supabaseRow.drive_file_id, 'drive-file-1')
     assert.equal(uploadData.fileUrl, supabaseRow.file_url)
+    assert.equal(uploadData.deduplicated, false)
   } finally {
     globalThis.fetch = originalFetch
   }
@@ -1038,14 +1060,15 @@ test('accepts a public PDF upload and stores its metadata reference in Supabase'
   const sourcePdf = await PDFDocument.create()
   const pdfBytes = await sourcePdf.save()
   const originalFetch = globalThis.fetch
-  let savedMetadata
+  const savedMetadata = []
   const storedObjects = new Map()
+  let r2PutCount = 0
   let storedValueType
 
   globalThis.fetch = async (url, options = {}) => {
     assert.equal(new URL(String(url)).hostname, 'project.supabase.co')
     if (options.method === 'POST') {
-      savedMetadata = JSON.parse(options.body)
+      savedMetadata.push(JSON.parse(options.body))
       return new Response(null, { status: 201 })
     }
     throw new Error('Unexpected Supabase request')
@@ -1074,12 +1097,17 @@ test('accepts a public PDF upload and stores its metadata reference in Supabase'
         ...env,
         R2_PUBLIC_BASE_URL: 'https://pdfs.example.com',
         PDF_BUCKET: {
+          async head(key) {
+            return storedObjects.has(key) ? { key } : null
+          },
           async put(key, value, options) {
+            r2PutCount += 1
             storedValueType = value.constructor.name
             storedObjects.set(key, {
               bytes: value,
               options,
             })
+            return { key }
           },
           async delete(key) {
             storedObjects.delete(key)
@@ -1088,20 +1116,66 @@ test('accepts a public PDF upload and stores its metadata reference in Supabase'
       },
     )
     const result = await response.json()
+    const duplicateResponse = await worker.fetch(
+      new Request('https://worker.example/api/public-upload', {
+        method: 'POST',
+        headers: {
+          Origin: allowedOrigin,
+          'Content-Type': 'application/pdf',
+          'X-Metadata-Title': 'Community Hymn, alternate listing',
+          'X-Metadata-Composer': '',
+          'X-Metadata-Category': 'Choir',
+        },
+        body: pdfBytes.slice(),
+        duplex: 'half',
+      }),
+      {
+        ...env,
+        R2_PUBLIC_BASE_URL: 'https://pdfs.example.com',
+        PDF_BUCKET: {
+          async head(key) {
+            return storedObjects.has(key) ? { key } : null
+          },
+          async put(key, value, options) {
+            r2PutCount += 1
+            storedValueType = value.constructor.name
+            storedObjects.set(key, {
+              bytes: value,
+              options,
+            })
+            return { key }
+          },
+          async delete(key) {
+            storedObjects.delete(key)
+          },
+        },
+      },
+    )
+    const duplicateResult = await duplicateResponse.json()
 
     assert.equal(response.status, 201)
+    assert.equal(duplicateResponse.status, 201)
     assert.equal(result.ok, true)
     assert.equal(storedObjects.size, 1)
-    assert.equal(savedMetadata.drive_file_id, null)
-    assert.equal(savedMetadata.title, 'Community Hymn')
-    assert.equal(savedMetadata.composer, '')
-    assert.equal(savedMetadata.category, 'Worship')
-    assert.equal(savedMetadata.r2_key.startsWith('Worship/'), true)
-    assert.equal(savedMetadata.file_url, result.fileUrl)
+    assert.equal(r2PutCount, 1)
+    assert.equal(savedMetadata.length, 2)
+    assert.equal(savedMetadata[0].drive_file_id, null)
+    assert.equal(savedMetadata[0].title, 'Community Hymn')
+    assert.equal(savedMetadata[0].composer, '')
+    assert.equal(savedMetadata[0].category, 'Worship')
+    assert.match(savedMetadata[0].r2_key, /^pdfs\/[0-9a-f]{64}\.pdf$/)
+    assert.equal(savedMetadata[0].r2_key, savedMetadata[1].r2_key)
+    assert.equal(savedMetadata[0].file_url, result.fileUrl)
+    assert.equal(duplicateResult.deduplicated, true)
+    assert.equal(duplicateResult.fileUrl, result.fileUrl)
     assert.equal(storedValueType, 'Uint8Array')
     assert.equal(
-      storedObjects.get(savedMetadata.r2_key).options.httpMetadata.contentType,
+      storedObjects.get(savedMetadata[0].r2_key).options.httpMetadata.contentType,
       'application/pdf',
+    )
+    assert.deepEqual(
+      storedObjects.get(savedMetadata[0].r2_key).options.onlyIf,
+      { etagDoesNotMatch: '*' },
     )
   } finally {
     globalThis.fetch = originalFetch

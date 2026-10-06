@@ -5,6 +5,7 @@ import {
   readJsonBody,
   supabaseRequest,
 } from './http.js'
+import { getPdfObjectKey, storePdfIfAbsent } from './pdf-storage.js'
 
 const BULK_IMPORT_BATCH_SIZE = 50
 export const MAX_PUBLIC_PDF_BYTES = 15 * 1024 * 1024
@@ -416,8 +417,10 @@ export async function handleBulkPdfUpload(request, env, origin) {
   }
 
   let fileUrl
+  let objectKey
+  let deduplicated
   try {
-    fileUrl = makePublicObjectUrl(env.R2_PUBLIC_BASE_URL, `${category.trim()}/${crypto.randomUUID()}.pdf`)
+    makePublicObjectUrl(env.R2_PUBLIC_BASE_URL, 'pdfs/validation.pdf')
   } catch (error) {
     if (error instanceof TypeError) {
       console.error(JSON.stringify({ message: 'R2_PUBLIC_BASE_URL is invalid.' }))
@@ -425,28 +428,17 @@ export async function handleBulkPdfUpload(request, env, origin) {
     }
     throw error
   }
-  const objectKey = decodeURIComponent(new URL(fileUrl).pathname.split('/').slice(-2).join('/'))
 
   try {
     const pdfBytes = await readPdfBytes(request.body, MAX_BULK_PDF_BYTES)
-    await env.PDF_BUCKET.put(objectKey, pdfBytes, {
-      httpMetadata: {
-        contentType: 'application/pdf',
-        cacheControl: 'public, max-age=31536000, immutable',
-      },
-      customMetadata: { driveFileId },
-    })
+    objectKey = await getPdfObjectKey(pdfBytes)
+    fileUrl = makePublicObjectUrl(env.R2_PUBLIC_BASE_URL, objectKey)
+    deduplicated = await storePdfIfAbsent(env.PDF_BUCKET, objectKey, pdfBytes)
   } catch (error) {
     console.error(JSON.stringify({
       message: 'R2 bulk PDF upload failed.',
       error: error instanceof Error ? error.message : String(error),
     }))
-    await env.PDF_BUCKET.delete(objectKey).catch((cleanupError) => {
-      console.error(JSON.stringify({
-        message: 'R2 cleanup failed after rejected PDF stream.',
-        error: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
-      }))
-    })
     return jsonResponse({
       error: error instanceof RangeError
         ? error.message
@@ -492,12 +484,6 @@ export async function handleBulkPdfUpload(request, env, origin) {
         status: insertResponse.status,
       }))
     }
-    await env.PDF_BUCKET.delete(objectKey).catch((error) => {
-      console.error(JSON.stringify({
-        message: 'R2 cleanup failed after Supabase insert failure.',
-        error: error instanceof Error ? error.message : String(error),
-      }))
-    })
     return jsonResponse({ error: 'Could not save this PDF in the catalogue.' }, 502, origin)
   }
 
@@ -507,5 +493,6 @@ export async function handleBulkPdfUpload(request, env, origin) {
     composer: composer.trim(),
     category: category.trim(),
     fileUrl,
+    deduplicated,
   }, 201, origin)
 }

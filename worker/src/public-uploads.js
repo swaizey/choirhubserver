@@ -5,6 +5,7 @@ import {
   readPdfBytes,
   validateCategory,
 } from './bulk-import.js'
+import { getPdfObjectKey, storePdfIfAbsent } from './pdf-storage.js'
 
 function decodeMetadataHeader(value) {
   if (typeof value !== 'string') return ''
@@ -53,11 +54,8 @@ export async function handlePublicPdfUpload(request, env, origin) {
     return jsonResponse({ error: 'PDF exceeds the 15 MB per-file limit.' }, 413, origin)
   }
 
-  let objectKey
-  let fileUrl
   try {
-    objectKey = `${category}/${crypto.randomUUID()}.pdf`
-    fileUrl = makePublicObjectUrl(env.R2_PUBLIC_BASE_URL, objectKey)
+    makePublicObjectUrl(env.R2_PUBLIC_BASE_URL, 'pdfs/validation.pdf')
   } catch (error) {
     if (error instanceof TypeError) {
       console.error(JSON.stringify({ message: 'R2 public URL is invalid.' }))
@@ -66,25 +64,19 @@ export async function handlePublicPdfUpload(request, env, origin) {
     throw error
   }
 
+  let objectKey
+  let fileUrl
+  let deduplicated
   try {
     const pdfBytes = await readPdfBytes(request.body, MAX_PUBLIC_PDF_BYTES)
-    await env.PDF_BUCKET.put(objectKey, pdfBytes, {
-      httpMetadata: {
-        contentType: 'application/pdf',
-        cacheControl: 'public, max-age=31536000, immutable',
-      },
-    })
+    objectKey = await getPdfObjectKey(pdfBytes)
+    fileUrl = makePublicObjectUrl(env.R2_PUBLIC_BASE_URL, objectKey)
+    deduplicated = await storePdfIfAbsent(env.PDF_BUCKET, objectKey, pdfBytes)
   } catch (error) {
     console.error(JSON.stringify({
       message: 'R2 public PDF upload failed.',
       error: error instanceof Error ? error.message : String(error),
     }))
-    await env.PDF_BUCKET.delete(objectKey).catch((cleanupError) => {
-      console.error(JSON.stringify({
-        message: 'R2 cleanup failed after rejected public PDF upload.',
-        error: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
-      }))
-    })
     return jsonResponse({
       error: error instanceof RangeError
         ? error.message
@@ -130,12 +122,6 @@ export async function handlePublicPdfUpload(request, env, origin) {
         status: insertResponse.status,
       }))
     }
-    await env.PDF_BUCKET.delete(objectKey).catch((error) => {
-      console.error(JSON.stringify({
-        message: 'R2 cleanup failed after Supabase insert failure.',
-        error: error instanceof Error ? error.message : String(error),
-      }))
-    })
     return jsonResponse({ error: 'Could not save PDF metadata. Please try again.' }, 502, origin)
   }
 
@@ -145,5 +131,6 @@ export async function handlePublicPdfUpload(request, env, origin) {
     composer,
     category,
     fileUrl,
+    deduplicated,
   }, 201, origin)
 }
