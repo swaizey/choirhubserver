@@ -66,12 +66,14 @@ export async function handlePublicPdfUpload(request, env, origin) {
 
   let objectKey
   let fileUrl
-  let deduplicated
   try {
     const pdfBytes = await readPdfBytes(request.body, MAX_PUBLIC_PDF_BYTES)
     objectKey = await getPdfObjectKey(pdfBytes)
     fileUrl = makePublicObjectUrl(env.R2_PUBLIC_BASE_URL, objectKey)
-    deduplicated = await storePdfIfAbsent(env.PDF_BUCKET, objectKey, pdfBytes)
+    const alreadyExists = await storePdfIfAbsent(env.PDF_BUCKET, objectKey, pdfBytes)
+    if (alreadyExists) {
+      return jsonResponse({ error: 'This PDF already exists. Upload cancelled.' }, 409, origin)
+    }
   } catch (error) {
     console.error(JSON.stringify({
       message: 'R2 public PDF upload failed.',
@@ -131,6 +133,5 @@ export async function handlePublicPdfUpload(request, env, origin) {
     composer,
     category,
     fileUrl,
-    deduplicated,
   }, 201, origin)
 }

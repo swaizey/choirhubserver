@@ -418,7 +418,6 @@ export async function handleBulkPdfUpload(request, env, origin) {
 
   let fileUrl
   let objectKey
-  let deduplicated
   try {
     makePublicObjectUrl(env.R2_PUBLIC_BASE_URL, 'pdfs/validation.pdf')
   } catch (error) {
@@ -433,7 +432,10 @@ export async function handleBulkPdfUpload(request, env, origin) {
     const pdfBytes = await readPdfBytes(request.body, MAX_BULK_PDF_BYTES)
     objectKey = await getPdfObjectKey(pdfBytes)
     fileUrl = makePublicObjectUrl(env.R2_PUBLIC_BASE_URL, objectKey)
-    deduplicated = await storePdfIfAbsent(env.PDF_BUCKET, objectKey, pdfBytes)
+    const alreadyExists = await storePdfIfAbsent(env.PDF_BUCKET, objectKey, pdfBytes)
+    if (alreadyExists) {
+      return jsonResponse({ error: 'This PDF already exists. Upload cancelled.' }, 409, origin)
+    }
   } catch (error) {
     console.error(JSON.stringify({
       message: 'R2 bulk PDF upload failed.',
@@ -493,6 +495,5 @@ export async function handleBulkPdfUpload(request, env, origin) {
     composer: composer.trim(),
     category: category.trim(),
     fileUrl,
-    deduplicated,
   }, 201, origin)
 }

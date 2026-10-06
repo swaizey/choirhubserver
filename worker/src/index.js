@@ -5,6 +5,7 @@ import {
 } from './bulk-import.js'
 import { jsonResponse } from './http.js'
 import { handlePublicPdfUpload } from './public-uploads.js'
+import { handleSheetMusicDelete } from './sheet-music-admin.js'
 import { handleSelectionList, handleSelectionSubmission } from './selections.js'
 import {
   handleChristmasCategoryNormalization,
@@ -21,6 +22,7 @@ const routes = new Map([
   ['/api/bulk-import/download', handleBulkDownload],
   ['/api/bulk-import/upload', handleBulkPdfUpload],
   ['/api/public-upload', handlePublicPdfUpload],
+  ['/api/admin/delete-sheet-music', handleSheetMusicDelete],
 ])
 
 export default {

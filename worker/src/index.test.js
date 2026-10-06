@@ -901,6 +901,7 @@ test('imports Drive PDF metadata, stores the PDF in R2, and saves its public URL
   const originalFetch = globalThis.fetch
   const storedObjects = new Map()
   let supabaseRow
+  let supabaseInsertCount = 0
 
   globalThis.fetch = async (input, options = {}) => {
     const url = new URL(String(input))
@@ -924,6 +925,7 @@ test('imports Drive PDF metadata, stores the PDF in R2, and saves its public URL
       })
     }
     if (url.hostname === 'project.supabase.co' && options.method === 'POST') {
+      supabaseInsertCount += 1
       supabaseRow = JSON.parse(options.body)
       return new Response(null, { status: 201 })
     }
@@ -1016,7 +1018,28 @@ test('imports Drive PDF metadata, stores the PDF in R2, and saves its public URL
     assert.match(supabaseRow.file_url, /^https:\/\/pdfs\.example\.com\/pdfs\/[0-9a-f]{64}\.pdf$/)
     assert.equal(supabaseRow.drive_file_id, 'drive-file-1')
     assert.equal(uploadData.fileUrl, supabaseRow.file_url)
-    assert.equal(uploadData.deduplicated, false)
+
+    const duplicateResponse = await worker.fetch(
+      new Request('https://worker.example/api/bulk-import/upload', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${testBulkToken}`,
+          'Content-Type': 'application/pdf',
+          'X-Drive-File-Id': 'drive-file-2',
+          'X-Metadata-Title': encodeURIComponent('Duplicate Hymn'),
+          'X-Metadata-Composer': encodeURIComponent('A. Composer'),
+          'X-Metadata-Category': encodeURIComponent('Advent & Christmas'),
+        },
+        body: pdfBytes,
+      }),
+      testEnv,
+    )
+    const duplicateData = await duplicateResponse.json()
+
+    assert.equal(duplicateResponse.status, 409)
+    assert.match(duplicateData.error, /already exists/)
+    assert.equal(storedObjects.size, 1)
+    assert.equal(supabaseInsertCount, 1)
   } finally {
     globalThis.fetch = originalFetch
   }
@@ -1154,20 +1177,18 @@ test('accepts a public PDF upload and stores its metadata reference in Supabase'
     const duplicateResult = await duplicateResponse.json()
 
     assert.equal(response.status, 201)
-    assert.equal(duplicateResponse.status, 201)
+    assert.equal(duplicateResponse.status, 409)
     assert.equal(result.ok, true)
     assert.equal(storedObjects.size, 1)
     assert.equal(r2PutCount, 1)
-    assert.equal(savedMetadata.length, 2)
+    assert.equal(savedMetadata.length, 1)
     assert.equal(savedMetadata[0].drive_file_id, null)
     assert.equal(savedMetadata[0].title, 'Community Hymn')
     assert.equal(savedMetadata[0].composer, '')
     assert.equal(savedMetadata[0].category, 'Worship')
     assert.match(savedMetadata[0].r2_key, /^pdfs\/[0-9a-f]{64}\.pdf$/)
-    assert.equal(savedMetadata[0].r2_key, savedMetadata[1].r2_key)
     assert.equal(savedMetadata[0].file_url, result.fileUrl)
-    assert.equal(duplicateResult.deduplicated, true)
-    assert.equal(duplicateResult.fileUrl, result.fileUrl)
+    assert.match(duplicateResult.error, /already exists/)
     assert.equal(storedValueType, 'Uint8Array')
     assert.equal(
       storedObjects.get(savedMetadata[0].r2_key).options.httpMetadata.contentType,
@@ -1210,4 +1231,93 @@ test('rejects non-PDF bodies on the public upload endpoint', async () => {
 
   assert.equal(response.status, 400)
   assert.equal(stored, false)
+})
+
+test('deletes selected sheet-music rows and only removes unreferenced R2 objects', async () => {
+  const originalFetch = globalThis.fetch
+  const rows = new Map([
+    ['123e4567-e89b-12d3-a456-426614174001', { id: '123e4567-e89b-12d3-a456-426614174001', r2_key: 'pdfs/shared.pdf' }],
+    ['123e4567-e89b-12d3-a456-426614174002', { id: '123e4567-e89b-12d3-a456-426614174002', r2_key: 'pdfs/shared.pdf' }],
+    ['123e4567-e89b-12d3-a456-426614174003', { id: '123e4567-e89b-12d3-a456-426614174003', r2_key: 'pdfs/unique.pdf' }],
+    ['123e4567-e89b-12d3-a456-426614174004', { id: '123e4567-e89b-12d3-a456-426614174004', r2_key: 'pdfs/shared.pdf' }],
+  ])
+  const deletedObjects = []
+  let deletedIds
+
+  globalThis.fetch = async (input, options = {}) => {
+    const url = new URL(String(input))
+    assert.equal(url.pathname, '/rest/v1/sheet_music')
+    if (options.method === 'DELETE') {
+      assert.equal(options.headers.Prefer, 'return=representation')
+      deletedIds = url.searchParams.get('id')
+      const requestedIds = deletedIds.slice(4, -1).split(',')
+      const deletedRows = requestedIds.map((id) => rows.get(id)).filter(Boolean)
+      for (const row of deletedRows) rows.delete(row.id)
+      return Response.json(deletedRows)
+    }
+    const key = url.searchParams.get('r2_key').slice(3)
+    return Response.json([...rows.values()].filter((row) => row.r2_key === key).slice(0, 1))
+  }
+
+  try {
+    const response = await worker.fetch(
+      new Request('https://worker.example/api/admin/delete-sheet-music', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${testBulkToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          ids: [
+            '123e4567-e89b-12d3-a456-426614174001',
+            '123e4567-e89b-12d3-a456-426614174002',
+            '123e4567-e89b-12d3-a456-426614174003',
+          ],
+        }),
+      }),
+      {
+        ...env,
+        BULK_UPLOAD_TOKEN: testBulkToken,
+        PDF_BUCKET: {
+          async delete(key) {
+            deletedObjects.push(key)
+          },
+        },
+      },
+    )
+    const result = await response.json()
+
+    assert.equal(response.status, 200)
+    assert.match(deletedIds, /^in\.\(/)
+    assert.equal(result.deletedCount, 3)
+    assert.equal(result.deletedObjectCount, 1)
+    assert.equal(result.retainedObjectCount, 1)
+    assert.deepEqual(deletedObjects, ['pdfs/unique.pdf'])
+    assert.equal(rows.has('123e4567-e89b-12d3-a456-426614174004'), true)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('requires the administrator token before deleting sheet music', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () => {
+    throw new Error('Supabase must not be contacted without an administrator token.')
+  }
+
+  try {
+    const response = await worker.fetch(
+      new Request('https://worker.example/api/admin/delete-sheet-music', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids: ['123e4567-e89b-12d3-a456-426614174001'] }),
+      }),
+      { ...env, PDF_BUCKET: { async delete() {} } },
+    )
+
+    assert.equal(response.status, 401)
+    assert.match((await response.json()).error, /administrator token/)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
 })
